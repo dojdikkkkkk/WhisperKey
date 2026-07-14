@@ -1,0 +1,19 @@
+# build artifacts
+.build/
+build/
+AppIcon.iconset/
+*.app
+
+# python
+server/venv/
+__pycache__/
+
+# user data — never commit personal glossaries or dictation logs
+server/glossary.json
+server/transcripts.jsonl
+server/learn_request.md
+*.log
+
+# misc
+.DS_Store
+*.wav

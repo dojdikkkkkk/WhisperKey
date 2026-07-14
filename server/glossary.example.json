@@ -1,0 +1,19 @@
+{
+  "terms": [
+    "spid.center", "GitHub", "Claude Code", "TypeScript", "PostgreSQL",
+    "Kubernetes", "WhisperKey", "faster-whisper", "Whisper", "MLX",
+    "Ollama", "API", "MCP"
+  ],
+  "rules": [
+    {"canonical": "spid.center",
+     "pattern": "сп[ии][дт][\\s,.]*(точка|дот)[\\s,.]*центе?р"},
+    {"canonical": "GitHub",
+     "pattern": "гит\\s*хаб|git\\s*hub"},
+    {"canonical": "Claude Code",
+     "pattern": "кло[ду]?д\\s*ко[уо]?д|клод\\s*код"},
+    {"canonical": "TypeScript",
+     "pattern": "тайп\\s*скрипт"},
+    {"canonical": "Kubernetes",
+     "pattern": "кубернетес|кубер"}
+  ]
+}
