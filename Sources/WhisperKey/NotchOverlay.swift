@@ -119,6 +119,16 @@ struct NotchView: View {
     }
 
     var body: some View {
+        if model.hasRealNotch {
+            realNotchGlow
+        } else {
+            virtualIsland
+        }
+    }
+
+    /// Built-in display: the capsule hides behind the physical notch,
+    /// only the flowing halo peeks out around its edges.
+    private var realNotchGlow: some View {
         // bottom-rounded rectangle hugging the top screen edge, like the notch itself
         // squarer than a capsule, with Apple's continuous (superellipse) curvature —
         // matches the real notch, whose corners ease in and out rather than arc
@@ -127,7 +137,7 @@ struct NotchView: View {
                                bottomTrailing: model.capsuleSize.height * 0.34),
             style: .continuous
         )
-        ZStack(alignment: .top) {
+        return ZStack(alignment: .top) {
             Color.clear
             TimelineView(.animation(minimumInterval: 1.0 / 30, paused: model.mode == .idle)) { context in
                 // gradient angle derived from frame time — no @State needed
@@ -168,6 +178,101 @@ struct NotchView: View {
             .opacity(model.mode == .idle ? 0 : 1)
             .animation(.easeOut(duration: 0.35), value: model.mode == .idle)
             .animation(.easeOut(duration: 0.12), value: model.level)
+        }
+    }
+
+    /// Displays without a notch (external monitors; the pattern for future
+    /// Windows/Linux ports): a dynamic-island-style black pill with a live
+    /// equalizer dancing to the voice, wrapped in the same soft halo.
+    private var virtualIsland: some View {
+        let w = model.capsuleSize.width
+        let h = model.capsuleSize.height
+        let pill = UnevenRoundedRectangle(
+            cornerRadii: .init(bottomLeading: h * 0.45, bottomTrailing: h * 0.45),
+            style: .continuous
+        )
+        return ZStack(alignment: .top) {
+            Color.clear
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: model.mode == .idle)) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                let angle = (t.truncatingRemainder(dividingBy: 3.0) / 3.0) * 360
+                let gradient = AngularGradient(colors: colors, center: .center, angle: .degrees(angle))
+                let barGradient = LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing)
+                let intensity = model.mode == .recording ? 0.55 + 0.45 * model.level : 0.55
+
+                ZStack {
+                    if model.mode != .idle {
+                        // halo behind the pill — blurred shape copies, never shadows
+                        pill.fill(gradient)
+                            .blur(radius: 24)
+                            .opacity(0.8 * intensity)
+                            .scaleEffect(1 + 0.16 * intensity)
+                        pill.fill(gradient)
+                            .blur(radius: 8)
+                            .opacity(0.5 * intensity)
+
+                        // the island itself: black body + thin gradient rim
+                        pill.fill(Color.black)
+                        pill.strokeBorder(gradient, lineWidth: 1.5)
+                            .opacity(0.9)
+
+                        // live equalizer masked by the palette gradient
+                        barGradient
+                            .mask(EqualizerBars(time: t, level: model.level, mode: model.mode))
+                            .padding(.horizontal, w * 0.10)
+                            .padding(.top, h * 0.18)
+                            .padding(.bottom, h * 0.22)
+                    }
+                }
+            }
+            .frame(width: w, height: h)
+            .opacity(model.mode == .idle ? 0 : 1)
+            .animation(.easeOut(duration: 0.35), value: model.mode == .idle)
+            .animation(.easeOut(duration: 0.1), value: model.level)
+        }
+    }
+}
+
+/// Animated equalizer bars. Recording: bars jump with the voice (level scales
+/// a per-bar pseudo-random dance). Transcribing: a smooth traveling wave.
+/// Inserted: all bars at full height (the green flash reads as "done").
+struct EqualizerBars: View {
+    let time: TimeInterval
+    let level: Double
+    let mode: NotchOverlay.Mode
+
+    var body: some View {
+        GeometryReader { geo in
+            let count = max(8, Int(geo.size.width / 7))
+            let barWidth = geo.size.width / CGFloat(count) * 0.55
+            let gap = geo.size.width / CGFloat(count) * 0.45
+            HStack(alignment: .center, spacing: gap) {
+                ForEach(0..<count, id: \.self) { i in
+                    let h = barHeight(index: i, count: count)
+                    RoundedRectangle(cornerRadius: barWidth / 2)
+                        .frame(width: barWidth, height: max(2, geo.size.height * h))
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
+        }
+    }
+
+    private func barHeight(index i: Int, count: Int) -> Double {
+        switch mode {
+        case .recording:
+            // two incommensurate sines per bar ≈ lively pseudo-random dance,
+            // amplitude driven by voice loudness
+            let dance = abs(sin(time * 6.3 + Double(i) * 1.7)) * 0.6
+                      + abs(sin(time * 9.1 + Double(i) * 0.9)) * 0.4
+            return 0.12 + (0.15 + 0.85 * level) * dance * 0.88
+        case .transcribing:
+            // smooth wave traveling across the pill
+            let phase = time * 4 - Double(i) * 0.55
+            return 0.25 + 0.6 * (0.5 + 0.5 * sin(phase))
+        case .inserted:
+            return 0.85
+        case .idle:
+            return 0
         }
     }
 }
