@@ -19,6 +19,11 @@ final class NotchOverlay {
         rebuildPanel()
     }
 
+    /// Voice loudness (0...1) — drives glow intensity while recording.
+    func set(level: Double) {
+        model.level = level
+    }
+
     func set(mode: Mode) {
         debugLog("set(\(mode)) panel=\(panel == nil ? "nil" : "ok") visible=\(panel?.isVisible ?? false)")
         model.mode = mode
@@ -104,6 +109,7 @@ final class NotchViewModel: ObservableObject {
     @Published var mode: NotchOverlay.Mode = .idle
     @Published var capsuleSize: CGSize = .init(width: 220, height: 35)
     @Published var hasRealNotch = false
+    @Published var level: Double = 0   // 0...1 voice loudness while recording
 }
 
 struct NotchView: View {
@@ -147,15 +153,19 @@ struct NotchView: View {
                         // Glow = blurred copies of the SHAPE only (no .shadow: shadows
                         // rasterize the layer's rectangular bounds and show up as a
                         // hard-cornered box on dark backgrounds).
+                        // while recording the glow breathes with voice loudness;
+                        // other modes run at a steady mid intensity
+                        let intensity = model.mode == .recording ? 0.35 + 0.65 * model.level : 0.8
                         let gradient = AngularGradient(colors: colors,
                                                        center: .center,
                                                        angle: .degrees(angle))
                         shape.fill(gradient)
                             .blur(radius: 28)
-                            .opacity(0.7)
+                            .opacity(0.9 * intensity)
+                            .scaleEffect(1 + 0.10 * intensity)
                         shape.fill(gradient)
                             .blur(radius: 12)
-                            .opacity(0.8)
+                            .opacity(0.6 + 0.4 * intensity)
                         shape.fill(gradient)
                             .blur(radius: 2)
                     }
@@ -164,6 +174,7 @@ struct NotchView: View {
             .frame(width: model.capsuleSize.width, height: model.capsuleSize.height)
             .opacity(model.mode == .idle ? 0 : 1)
             .animation(.easeOut(duration: 0.35), value: model.mode == .idle)
+            .animation(.easeOut(duration: 0.12), value: model.level)
         }
     }
 }

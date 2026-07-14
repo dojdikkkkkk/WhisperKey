@@ -28,6 +28,14 @@ final class AudioRecorder {
         currentURL = url
     }
 
+    /// Current input level normalized to 0...1 (for the reactive glow).
+    var level: Double {
+        guard let rec = avRecorder else { return 0 }
+        rec.updateMeters()
+        let db = Double(rec.averagePower(forChannel: 0))  // ≈ -60 (silence) ... 0 (loud)
+        return max(0, min(1, (db + 45) / 35))
+    }
+
     /// Stops recording and returns the WAV file URL, or nil if nothing was recorded.
     func stop() -> URL? {
         guard let rec = avRecorder else { return nil }

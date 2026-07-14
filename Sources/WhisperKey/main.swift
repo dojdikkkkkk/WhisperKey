@@ -50,17 +50,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.start()
     }
 
+    private var levelTimer: Timer?
+
     private func startRecording() {
         do {
             try recorder.start()
             setStatus(.recording)
+            // feed voice loudness into the notch glow ~20 times a second
+            levelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.overlay.set(level: self.recorder.level)
+            }
         } catch {
             NSLog("Recording failed: \(error)")
             setStatus(.idle)
         }
     }
 
+    private func stopLevelTimer() {
+        levelTimer?.invalidate()
+        levelTimer = nil
+        overlay.set(level: 0)
+    }
+
     private func stopAndTranscribe() {
+        stopLevelTimer()
         guard let wavURL = recorder.stop() else {
             setStatus(.idle)
             return
@@ -87,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func cancelRecording() {
+        stopLevelTimer()
         _ = recorder.stop()
         setStatus(.idle)
     }

@@ -67,12 +67,18 @@ struct GlassCard: ViewModifier {
         let base = content
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
+        // glassEffect exists only in the macOS 26+ SDK — availability checks guard
+        // the runtime, not the compiler, so older SDKs (CI runners) need #if too
         return Group {
+            #if compiler(>=6.4)
             if #available(macOS 26.0, *) {
                 base.glassEffect(.regular, in: .rect(cornerRadius: 14))
             } else {
                 base.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
+            #else
+            base.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            #endif
         }
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
