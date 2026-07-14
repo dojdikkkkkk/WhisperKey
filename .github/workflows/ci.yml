@@ -1,0 +1,17 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Swift app
+        run: swift build
+      - name: Check Python syntax
+        run: python3 -m py_compile server/*.py
+      - name: Shellcheck-lite
+        run: bash -n install.sh build.sh server/setup.sh
