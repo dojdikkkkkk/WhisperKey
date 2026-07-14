@@ -6,7 +6,7 @@ import SwiftUI
 final class NotchOverlay {
     enum Mode { case idle, recording, transcribing, inserted }
 
-    private var panel: NSPanel?
+    private var panels: [NSPanel] = []
     private let model = NotchViewModel()
 
     init() {
@@ -14,9 +14,9 @@ final class NotchOverlay {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.rebuildPanel()
+            self?.rebuildPanels()
         }
-        rebuildPanel()
+        rebuildPanels()
     }
 
     /// Voice loudness (0...1) — drives glow intensity while recording.
@@ -25,22 +25,22 @@ final class NotchOverlay {
     }
 
     func set(mode: Mode) {
-        debugLog("set(\(mode)) panel=\(panel == nil ? "nil" : "ok") visible=\(panel?.isVisible ?? false)")
+        debugLog("set(\(mode)) panels=\(panels.count)")
         model.mode = mode
-        guard let panel else { return }
         switch mode {
         case .idle:
-            // let the fade-out animation play, then hide the window
+            // let the fade-out animation play, then hide the windows
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-                if self?.model.mode == .idle { self?.panel?.orderOut(nil) }
+                guard let self, self.model.mode == .idle else { return }
+                self.panels.forEach { $0.orderOut(nil) }
             }
         case .inserted:
-            panel.orderFrontRegardless()
+            panels.forEach { $0.orderFrontRegardless() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 if self?.model.mode == .inserted { self?.set(mode: .idle) }
             }
         default:
-            panel.orderFrontRegardless()
+            panels.forEach { $0.orderFrontRegardless() }
         }
     }
 
@@ -57,39 +57,52 @@ final class NotchOverlay {
             return (CGSize(width: width, height: topInset), true)
         }
         // virtual notch on displays without one — proportions of the real thing
-        return (CGSize(width: 200, height: 32), false)
+        return (CGSize(width: 210, height: 34), false)
     }
 
-    private func rebuildPanel() {
-        panel?.orderOut(nil)
-        panel = nil
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+    /// True when this screen is part of a mirror set: an external display shows the
+    /// same framebuffer, so pixels "hidden" behind the physical notch are fully
+    /// visible there — the notch-hugging style would render as a weird filled bar.
+    private static func isMirrored(_ screen: NSScreen) -> Bool {
+        guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+            return false
+        }
+        return CGDisplayIsInMirrorSet(id) != 0
+    }
 
-        let (notch, hasNotch) = Self.notchSize(for: screen)
-        // capsule is 5% larger than the notch; the window covers the WHOLE screen
-        // so the blurred halo always fades to zero naturally — any smaller window
-        // clips the glow into a visible hard-edged rectangle at high intensity
-        let capsule = CGSize(width: notch.width * 1.05, height: notch.height * 1.05)
-        let frame = screen.frame
+    /// One overlay panel per screen: glow behind the real notch on the built-in
+    /// display, a dynamic-island indicator on every screen without one.
+    private func rebuildPanels() {
+        panels.forEach { $0.orderOut(nil) }
+        panels = []
 
-        let p = NSPanel(contentRect: frame,
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        p.isOpaque = false
-        p.backgroundColor = .clear
-        p.hasShadow = false
-        p.level = .screenSaver
-        p.ignoresMouseEvents = true
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-        p.isReleasedWhenClosed = false
+        for screen in NSScreen.screens {
+            let (notch, hasNotch) = Self.notchSize(for: screen)
+            // mirrored built-in: the external copy shows the notch-hidden pixels,
+            // so fall back to the island style that looks right on both
+            let useNotchStyle = hasNotch && !Self.isMirrored(screen)
+            // capsule is 5% larger than the notch; the window covers the WHOLE
+            // screen so the blurred halo always fades out naturally — a smaller
+            // window clips the glow into a hard-edged rectangle at high intensity
+            let capsule = CGSize(width: notch.width * 1.05, height: notch.height * 1.05)
 
-        model.capsuleSize = capsule
-        model.hasRealNotch = hasNotch
-        p.contentView = NSHostingView(rootView: NotchView(model: model))
+            let p = NSPanel(contentRect: screen.frame,
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.level = .screenSaver
+            p.ignoresMouseEvents = true
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            p.isReleasedWhenClosed = false
+            p.contentView = NSHostingView(
+                rootView: NotchView(model: model, capsuleSize: capsule, hasRealNotch: useNotchStyle))
 
-        panel = p
-        debugLog("rebuildPanel frame=\(frame) hasNotch=\(hasNotch)")
-        if model.mode != .idle { p.orderFrontRegardless() }
+            panels.append(p)
+            debugLog("rebuildPanels screen=\(screen.localizedName) frame=\(screen.frame) notchStyle=\(useNotchStyle)")
+            if model.mode != .idle { p.orderFrontRegardless() }
+        }
     }
 }
 
@@ -97,13 +110,14 @@ final class NotchOverlay {
 
 final class NotchViewModel: ObservableObject {
     @Published var mode: NotchOverlay.Mode = .idle
-    @Published var capsuleSize: CGSize = .init(width: 220, height: 35)
-    @Published var hasRealNotch = false
     @Published var level: Double = 0   // 0...1 voice loudness while recording
 }
 
 struct NotchView: View {
     @ObservedObject var model: NotchViewModel
+    // per-screen constants — each display gets its own panel and style
+    let capsuleSize: CGSize
+    let hasRealNotch: Bool
 
     private var colors: [Color] {
         switch model.mode {
@@ -119,7 +133,7 @@ struct NotchView: View {
     }
 
     var body: some View {
-        if model.hasRealNotch {
+        if hasRealNotch {
             realNotchGlow
         } else {
             virtualIsland
@@ -133,8 +147,8 @@ struct NotchView: View {
         // squarer than a capsule, with Apple's continuous (superellipse) curvature —
         // matches the real notch, whose corners ease in and out rather than arc
         let shape = UnevenRoundedRectangle(
-            cornerRadii: .init(bottomLeading: model.capsuleSize.height * 0.34,
-                               bottomTrailing: model.capsuleSize.height * 0.34),
+            cornerRadii: .init(bottomLeading: capsuleSize.height * 0.34,
+                               bottomTrailing: capsuleSize.height * 0.34),
             style: .continuous
         )
         return ZStack(alignment: .top) {
@@ -174,7 +188,7 @@ struct NotchView: View {
                     }
                 }
             }
-            .frame(width: model.capsuleSize.width, height: model.capsuleSize.height)
+            .frame(width: capsuleSize.width, height: capsuleSize.height)
             .opacity(model.mode == .idle ? 0 : 1)
             .animation(.easeOut(duration: 0.35), value: model.mode == .idle)
             .animation(.easeOut(duration: 0.12), value: model.level)
@@ -185,8 +199,8 @@ struct NotchView: View {
     /// Windows/Linux ports): a dynamic-island-style black pill with a live
     /// equalizer dancing to the voice, wrapped in the same soft halo.
     private var virtualIsland: some View {
-        let w = model.capsuleSize.width
-        let h = model.capsuleSize.height
+        let w = capsuleSize.width
+        let h = capsuleSize.height
         let pill = UnevenRoundedRectangle(
             cornerRadii: .init(bottomLeading: h * 0.45, bottomTrailing: h * 0.45),
             style: .continuous
