@@ -29,11 +29,12 @@ final class AudioRecorder {
     }
 
     /// Current input level normalized to 0...1 (for the reactive glow).
+    /// Peak power reacts to speech much more sharply than average power.
     var level: Double {
         guard let rec = avRecorder else { return 0 }
         rec.updateMeters()
-        let db = Double(rec.averagePower(forChannel: 0))  // ≈ -60 (silence) ... 0 (loud)
-        return max(0, min(1, (db + 45) / 35))
+        let db = Double(rec.peakPower(forChannel: 0))  // ≈ -60 (silence) ... 0 (loud)
+        return max(0, min(1, (db + 38) / 30))
     }
 
     /// Stops recording and returns the WAV file URL, or nil if nothing was recorded.
