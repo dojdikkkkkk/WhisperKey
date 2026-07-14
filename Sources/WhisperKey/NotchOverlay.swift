@@ -66,21 +66,11 @@ final class NotchOverlay {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
 
         let (notch, hasNotch) = Self.notchSize(for: screen)
-        // capsule is 5% larger than the notch; generous margin so the glow fades
-        // to zero well before the window edge (otherwise it clips into a visible
-        // hard-cornered rectangle)
+        // capsule is 5% larger than the notch; the window covers the WHOLE screen
+        // so the blurred halo always fades to zero naturally — any smaller window
+        // clips the glow into a visible hard-edged rectangle at high intensity
         let capsule = CGSize(width: notch.width * 1.05, height: notch.height * 1.05)
-        let glowMargin: CGFloat = 80
-        let winSize = CGSize(width: capsule.width + glowMargin * 2,
-                             height: capsule.height + glowMargin)
-
-        // top-center, flush with the screen's top edge
-        let frame = NSRect(
-            x: screen.frame.midX - winSize.width / 2,
-            y: screen.frame.maxY - winSize.height,
-            width: winSize.width,
-            height: winSize.height
-        )
+        let frame = screen.frame
 
         let p = NSPanel(contentRect: frame,
                         styleMask: [.borderless, .nonactivatingPanel],
