@@ -60,27 +60,14 @@ final class NotchOverlay {
         return (CGSize(width: 210, height: 34), false)
     }
 
-    /// True when this screen is part of a mirror set: an external display shows the
-    /// same framebuffer, so pixels "hidden" behind the physical notch are fully
-    /// visible there — the notch-hugging style would render as a weird filled bar.
-    private static func isMirrored(_ screen: NSScreen) -> Bool {
-        guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
-            return false
-        }
-        return CGDisplayIsInMirrorSet(id) != 0
-    }
-
-    /// One overlay panel per screen: glow behind the real notch on the built-in
-    /// display, a dynamic-island indicator on every screen without one.
+    /// One overlay panel per screen — the same island design everywhere; the
+    /// built-in display's physical notch naturally hides the pill's black body.
     private func rebuildPanels() {
         panels.forEach { $0.orderOut(nil) }
         panels = []
 
         for screen in NSScreen.screens {
-            let (notch, hasNotch) = Self.notchSize(for: screen)
-            // mirrored built-in: the external copy shows the notch-hidden pixels,
-            // so fall back to the island style that looks right on both
-            let useNotchStyle = hasNotch && !Self.isMirrored(screen)
+            let (notch, _) = Self.notchSize(for: screen)
             // capsule is 5% larger than the notch; the window covers the WHOLE
             // screen so the blurred halo always fades out naturally — a smaller
             // window clips the glow into a hard-edged rectangle at high intensity
@@ -97,10 +84,10 @@ final class NotchOverlay {
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
             p.isReleasedWhenClosed = false
             p.contentView = NSHostingView(
-                rootView: NotchView(model: model, capsuleSize: capsule, hasRealNotch: useNotchStyle))
+                rootView: NotchView(model: model, capsuleSize: capsule))
 
             panels.append(p)
-            debugLog("rebuildPanels screen=\(screen.localizedName) frame=\(screen.frame) notchStyle=\(useNotchStyle)")
+            debugLog("rebuildPanels screen=\(screen.localizedName) frame=\(screen.frame)")
             if model.mode != .idle { p.orderFrontRegardless() }
         }
     }
@@ -115,9 +102,8 @@ final class NotchViewModel: ObservableObject {
 
 struct NotchView: View {
     @ObservedObject var model: NotchViewModel
-    // per-screen constants — each display gets its own panel and style
+    // per-screen constant — each display gets its own panel sized to its notch
     let capsuleSize: CGSize
-    let hasRealNotch: Bool
 
     private var colors: [Color] {
         switch model.mode {
@@ -133,71 +119,15 @@ struct NotchView: View {
     }
 
     var body: some View {
-        if hasRealNotch {
-            realNotchGlow
-        } else {
-            virtualIsland
-        }
+        // ONE design everywhere: a dynamic-island pill with a live equalizer.
+        // On the built-in display it hides behind the physical notch (black
+        // blends into black, only the halo and rim peek out); on notchless
+        // screens the whole island with its animation is visible.
+        virtualIsland
     }
 
-    /// Built-in display: the capsule hides behind the physical notch,
-    /// only the flowing halo peeks out around its edges.
-    private var realNotchGlow: some View {
-        // bottom-rounded rectangle hugging the top screen edge, like the notch itself
-        // squarer than a capsule, with Apple's continuous (superellipse) curvature —
-        // matches the real notch, whose corners ease in and out rather than arc
-        let shape = UnevenRoundedRectangle(
-            cornerRadii: .init(bottomLeading: capsuleSize.height * 0.34,
-                               bottomTrailing: capsuleSize.height * 0.34),
-            style: .continuous
-        )
-        return ZStack(alignment: .top) {
-            Color.clear
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: model.mode == .idle)) { context in
-                // gradient angle derived from frame time — no @State needed
-                let t = context.date.timeIntervalSinceReferenceDate
-                let angle = (t.truncatingRemainder(dividingBy: 3.0) / 3.0) * 360
-                ZStack {
-                    if model.mode != .idle {
-                        // Apple Intelligence-style glow: the whole capsule is a flowing
-                        // gradient; behind a real notch only a soft halo peeks out.
-                        // Palette switches are instant (colors aren't animated) while
-                        // the angle keeps flowing from the timeline — sharp color
-                        // change, uninterrupted shimmer.
-                        // Glow = blurred copies of the SHAPE only (no .shadow: shadows
-                        // rasterize the layer's rectangular bounds and show up as a
-                        // hard-cornered box on dark backgrounds).
-                        // recording baseline matches the steady transcribing/inserted
-                        // glow (0.8); the voice pushes it ABOVE that — the halo swells
-                        // and brightens beyond the resting state on every word
-                        let intensity = model.mode == .recording ? 0.8 + 0.8 * model.level : 0.8
-                        let gradient = AngularGradient(colors: colors,
-                                                       center: .center,
-                                                       angle: .degrees(angle))
-                        shape.fill(gradient)
-                            .blur(radius: 30)
-                            .opacity(min(1, intensity))
-                            .scaleEffect(1 + 0.25 * intensity)
-                        shape.fill(gradient)
-                            .blur(radius: 12)
-                            .opacity(min(1, 0.25 + 0.75 * intensity))
-                            .scaleEffect(1 + 0.10 * max(0, intensity - 0.8))
-                        shape.fill(gradient)
-                            .blur(radius: 2)
-                            .opacity(min(1, 0.45 + 0.55 * intensity))
-                    }
-                }
-            }
-            .frame(width: capsuleSize.width, height: capsuleSize.height)
-            .opacity(model.mode == .idle ? 0 : 1)
-            .animation(.easeOut(duration: 0.35), value: model.mode == .idle)
-            .animation(.easeOut(duration: 0.12), value: model.level)
-        }
-    }
-
-    /// Displays without a notch (external monitors; the pattern for future
-    /// Windows/Linux ports): a dynamic-island-style black pill with a live
-    /// equalizer dancing to the voice, wrapped in the same soft halo.
+    /// Dynamic-island indicator: black pill with a thin flowing gradient rim,
+    /// a live equalizer dancing to the voice, and a soft halo around it.
     private var virtualIsland: some View {
         let w = capsuleSize.width
         let h = capsuleSize.height
@@ -212,18 +142,20 @@ struct NotchView: View {
                 let angle = (t.truncatingRemainder(dividingBy: 3.0) / 3.0) * 360
                 let gradient = AngularGradient(colors: colors, center: .center, angle: .degrees(angle))
                 let barGradient = LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing)
-                let intensity = model.mode == .recording ? 0.55 + 0.45 * model.level : 0.55
+                // recording baseline matches the steady transcribing/inserted glow;
+                // the voice pushes the halo above it on every word
+                let intensity = model.mode == .recording ? 0.8 + 0.8 * model.level : 0.8
 
                 ZStack {
                     if model.mode != .idle {
                         // halo behind the pill — blurred shape copies, never shadows
                         pill.fill(gradient)
-                            .blur(radius: 24)
-                            .opacity(0.8 * intensity)
-                            .scaleEffect(1 + 0.16 * intensity)
+                            .blur(radius: 28)
+                            .opacity(min(1, intensity))
+                            .scaleEffect(1 + 0.22 * intensity)
                         pill.fill(gradient)
                             .blur(radius: 8)
-                            .opacity(0.5 * intensity)
+                            .opacity(0.55 * min(1, intensity))
 
                         // the island itself: black body + thin gradient rim
                         pill.fill(Color.black)
