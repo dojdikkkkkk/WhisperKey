@@ -153,22 +153,24 @@ struct NotchView: View {
                         // Glow = blurred copies of the SHAPE only (no .shadow: shadows
                         // rasterize the layer's rectangular bounds and show up as a
                         // hard-cornered box on dark backgrounds).
-                        // while recording the glow breathes with voice loudness:
-                        // near-dark in silence, full blaze while speaking
-                        let intensity = model.mode == .recording ? 0.08 + 0.92 * model.level : 0.8
+                        // recording baseline matches the steady transcribing/inserted
+                        // glow (0.8); the voice pushes it ABOVE that — the halo swells
+                        // and brightens beyond the resting state on every word
+                        let intensity = model.mode == .recording ? 0.8 + 0.8 * model.level : 0.8
                         let gradient = AngularGradient(colors: colors,
                                                        center: .center,
                                                        angle: .degrees(angle))
                         shape.fill(gradient)
                             .blur(radius: 30)
-                            .opacity(intensity)
-                            .scaleEffect(1 + 0.22 * intensity)
+                            .opacity(min(1, intensity))
+                            .scaleEffect(1 + 0.25 * intensity)
                         shape.fill(gradient)
                             .blur(radius: 12)
-                            .opacity(0.25 + 0.75 * intensity)
+                            .opacity(min(1, 0.25 + 0.75 * intensity))
+                            .scaleEffect(1 + 0.10 * max(0, intensity - 0.8))
                         shape.fill(gradient)
                             .blur(radius: 2)
-                            .opacity(0.45 + 0.55 * intensity)
+                            .opacity(min(1, 0.45 + 0.55 * intensity))
                     }
                 }
             }
