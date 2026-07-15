@@ -124,10 +124,16 @@ enum TranscriptHistory {
     }
 }
 
+final class HistoryModel: ObservableObject {
+    @Published var entries: [TranscriptEntry] = []
+    @Published var copiedID: Int?
+    @Published var confirmClear = false
+}
+
 struct HistoryView: View {
-    @State private var entries: [TranscriptEntry] = []
-    @State private var copiedID: Int?
-    @State private var confirmClear = false
+    // @State is a macro in the macOS 26 SDK and doesn't compile with bare CLT —
+    // state lives in an ObservableObject owned by the window controller instead
+    @ObservedObject var model: HistoryModel
 
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -141,33 +147,33 @@ struct HistoryView: View {
             HStack {
                 Text("Dictation history").font(.title3.bold())
                 Spacer()
-                Button("Refresh") { entries = TranscriptHistory.load() }
-                Button("Clear…", role: .destructive) { confirmClear = true }
+                Button("Refresh") { model.entries = TranscriptHistory.load() }
+                Button("Clear…", role: .destructive) { model.confirmClear = true }
                     .confirmationDialog("Delete the entire dictation history?",
-                                        isPresented: $confirmClear) {
+                                        isPresented: $model.confirmClear) {
                         Button("Delete all", role: .destructive) {
                             TranscriptHistory.clear()
-                            entries = []
+                            model.entries = []
                         }
                     }
             }
             Text("Stored locally in transcripts.jsonl. Click any entry to copy it.")
                 .font(.callout).foregroundStyle(.secondary)
 
-            if entries.isEmpty {
+            if model.entries.isEmpty {
                 Spacer()
                 Text("No dictations yet — hold right ⌘ and say something.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                 Spacer()
             } else {
-                List(entries) { e in
+                List(model.entries) { e in
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(e.text, forType: .string)
-                        copiedID = e.id
+                        model.copiedID = e.id
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                            if copiedID == e.id { copiedID = nil }
+                            if model.copiedID == e.id { model.copiedID = nil }
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
@@ -181,7 +187,7 @@ struct HistoryView: View {
                                         .background(Capsule().fill(Color.accentColor.opacity(0.2)))
                                 }
                                 Spacer()
-                                if copiedID == e.id {
+                                if model.copiedID == e.id {
                                     Text("Copied ✓").font(.caption).foregroundStyle(.green)
                                 }
                             }
@@ -198,7 +204,7 @@ struct HistoryView: View {
             }
         }
         .padding(20)
-        .onAppear { entries = TranscriptHistory.load() }
+        .onAppear { model.entries = TranscriptHistory.load() }
     }
 }
 
@@ -368,6 +374,7 @@ final class SettingsTabState: ObservableObject {
 struct SettingsRootView: View {
     @ObservedObject var model: SettingsModel
     @ObservedObject var tabs: SettingsTabState
+    let history: HistoryModel
     let isFirstRun: Bool
 
     var body: some View {
@@ -375,7 +382,7 @@ struct SettingsRootView: View {
             SettingsView(model: model, isFirstRun: isFirstRun)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(0)
-            HistoryView()
+            HistoryView(model: history)
                 .frame(width: 520, height: 560)
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
                 .tag(1)
@@ -389,13 +396,15 @@ final class SettingsWindowController {
     private var window: NSWindow?
     private let model = SettingsModel()
     private let tabs = SettingsTabState()
+    private let history = HistoryModel()
 
     func show(firstRun: Bool = false, historyTab: Bool = false) {
         model.config = Config.shared
         model.pollHealth()
         tabs.tab = historyTab ? 1 : 0
+        history.entries = TranscriptHistory.load()
         if window == nil {
-            let view = SettingsRootView(model: model, tabs: tabs, isFirstRun: firstRun)
+            let view = SettingsRootView(model: model, tabs: tabs, history: history, isFirstRun: firstRun)
             let w = NSWindow(contentViewController: NSHostingController(rootView: view))
             w.title = "WhisperKey"
             w.titlebarAppearsTransparent = true
