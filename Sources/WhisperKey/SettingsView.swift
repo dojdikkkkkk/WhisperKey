@@ -92,6 +92,116 @@ extension View {
     func glassCard(selected: Bool = false) -> some View { modifier(GlassCard(selected: selected)) }
 }
 
+// MARK: - Transcription history
+
+struct TranscriptEntry: Identifiable {
+    let id: Int
+    let ts: Date
+    let text: String
+    let language: String
+}
+
+enum TranscriptHistory {
+    static var path: String { Config.shared.serverDir + "/transcripts.jsonl" }
+
+    static func load(limit: Int = 300) -> [TranscriptEntry] {
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        let iso = ISO8601DateFormatter()
+        let lines = raw.split(separator: "\n").suffix(limit)
+        return lines.enumerated().compactMap { i, line in
+            guard let data = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let text = json["text"] as? String, !text.isEmpty else { return nil }
+            let ts = (json["ts"] as? String).flatMap { iso.date(from: $0) } ?? .distantPast
+            return TranscriptEntry(id: i, ts: ts,
+                                   text: text,
+                                   language: json["language"] as? String ?? "")
+        }.reversed()
+    }
+
+    static func clear() {
+        try? "".write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
+struct HistoryView: View {
+    @State private var entries: [TranscriptEntry] = []
+    @State private var copiedID: Int?
+    @State private var confirmClear = false
+
+    private let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Dictation history").font(.title3.bold())
+                Spacer()
+                Button("Refresh") { entries = TranscriptHistory.load() }
+                Button("Clear…", role: .destructive) { confirmClear = true }
+                    .confirmationDialog("Delete the entire dictation history?",
+                                        isPresented: $confirmClear) {
+                        Button("Delete all", role: .destructive) {
+                            TranscriptHistory.clear()
+                            entries = []
+                        }
+                    }
+            }
+            Text("Stored locally in transcripts.jsonl. Click any entry to copy it.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            if entries.isEmpty {
+                Spacer()
+                Text("No dictations yet — hold right ⌘ and say something.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                Spacer()
+            } else {
+                List(entries) { e in
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(e.text, forType: .string)
+                        copiedID = e.id
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                            if copiedID == e.id { copiedID = nil }
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(timeFormatter.string(from: e.ts))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if !e.language.isEmpty {
+                                    Text(e.language.uppercased())
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                                }
+                                Spacer()
+                                if copiedID == e.id {
+                                    Text("Copied ✓").font(.caption).foregroundStyle(.green)
+                                }
+                            }
+                            Text(e.text)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(20)
+        .onAppear { entries = TranscriptHistory.load() }
+    }
+}
+
 // MARK: - Settings view
 
 final class SettingsModel: ObservableObject {
@@ -249,19 +359,45 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Root tabs
+
+final class SettingsTabState: ObservableObject {
+    @Published var tab: Int = 0   // 0 = settings, 1 = history
+}
+
+struct SettingsRootView: View {
+    @ObservedObject var model: SettingsModel
+    @ObservedObject var tabs: SettingsTabState
+    let isFirstRun: Bool
+
+    var body: some View {
+        TabView(selection: $tabs.tab) {
+            SettingsView(model: model, isFirstRun: isFirstRun)
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(0)
+            HistoryView()
+                .frame(width: 520, height: 560)
+                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+                .tag(1)
+        }
+    }
+}
+
 // MARK: - Window controller
 
 final class SettingsWindowController {
     private var window: NSWindow?
     private let model = SettingsModel()
+    private let tabs = SettingsTabState()
 
-    func show(firstRun: Bool = false) {
+    func show(firstRun: Bool = false, historyTab: Bool = false) {
         model.config = Config.shared
         model.pollHealth()
+        tabs.tab = historyTab ? 1 : 0
         if window == nil {
-            let view = SettingsView(model: model, isFirstRun: firstRun)
+            let view = SettingsRootView(model: model, tabs: tabs, isFirstRun: firstRun)
             let w = NSWindow(contentViewController: NSHostingController(rootView: view))
-            w.title = "WhisperKey Settings"
+            w.title = "WhisperKey"
             w.titlebarAppearsTransparent = true
             w.styleMask = [.titled, .closable, .fullSizeContentView]
             w.isReleasedWhenClosed = false

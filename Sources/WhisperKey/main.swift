@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Dictation History…", action: #selector(openHistory), keyEquivalent: "h"))
         menu.addItem(NSMenuItem(title: "Learn from recent dictation", action: #selector(learnNow), keyEquivalent: "l"))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit WhisperKey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -98,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settings.show()
+    }
+
+    @objc private func openHistory() {
+        settings.show(historyTab: true)
     }
 
     private func cancelRecording() {
