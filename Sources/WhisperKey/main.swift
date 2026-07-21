@@ -7,7 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let client = TranscriptionClient()
     private var hotkey: HotkeyMonitor!
     private var overlay: NotchOverlay!
-    private let settings = SettingsWindowController()
+    private lazy var settings = SettingsWindowController { [weak self] in
+        self?.client.ensureServerRunning()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -22,9 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Quit WhisperKey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
 
-        if Config.isFirstRun {
-            Config.shared.save() // materialize defaults so the server sees them
+        if !Config.shared.setupComplete {
+            Config.shared.save() // remember incomplete setup across relaunches
             settings.show(firstRun: true)
+        } else {
+            if Config.shared.transcriptionBackend == "openai" {
+                TranscriptionNotifier.requestPermission()
+            }
+            client.ensureServerRunning()
         }
 
         // Accessibility is required for text delivery (AX insert / event posting).
@@ -40,8 +47,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             if !granted { NSLog("Microphone access denied") }
         }
-
-        client.ensureServerRunning()
 
         hotkey = HotkeyMonitor(
             onStartRecording: { [weak self] in self?.startRecording() },
