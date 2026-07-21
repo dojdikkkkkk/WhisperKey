@@ -47,5 +47,5 @@ Almost there! Grant two permissions in System Settings -> Privacy & Security:
 Then RELAUNCH the app (quit from the menu bar icon, open again).
 
 Dictate: hold right-Cmd and speak (push-to-talk), or tap right-Cmd to toggle.
-The setup wizard in the app lets you pick the speech model and glossary learning.
+The setup wizard lets you choose Local MLX or your own Cloud API, plus glossary learning.
 EOF
