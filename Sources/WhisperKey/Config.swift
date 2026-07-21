@@ -8,7 +8,7 @@ struct Config: Codable {
     var port: Int
     var model: String
     var holdThreshold: Double
-    var learnBackend: String   // "ollama" | "claude" | "codex" | "agent-manual" | "off"
+    var learnBackend: String   // "ollama" | "claude" | "codex" | "pi" | "agent-manual" | "off"
     var learnEvery: Int
     var ollamaModel: String
     var logTranscripts: Bool

@@ -53,6 +53,8 @@ Ask the user which backend they want, then set `learnBackend` in
 - **Ollama installed** (`ollama --version` works): `"learnBackend": "ollama"`,
   make sure the model is pulled: `ollama pull qwen3:4b`.
 - **Claude Code / Codex CLI**: `"learnBackend": "claude"` or `"codex"`.
+- **Pi installed and authenticated** (`pi --version` works): `"learnBackend": "pi"`.
+  Learning uses Pi's configured provider and model in one-shot, no-tools mode.
 
 Seed the glossary from the user's existing texts (with their permission):
 `server/seed_glossary.py <paths>` prints candidate terms — curate together with the

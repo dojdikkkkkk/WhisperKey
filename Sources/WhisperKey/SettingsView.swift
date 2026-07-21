@@ -44,6 +44,8 @@ let learnBackends: [LearnBackend] = [
                  detail: "Uses `claude -p` with the Haiku model.", cliName: "claude"),
     LearnBackend(id: "codex", name: "Codex CLI",
                  detail: "Uses `codex exec`.", cliName: "codex"),
+    LearnBackend(id: "pi", name: "Pi coding agent",
+                 detail: "Uses your configured Pi provider and model.", cliName: "pi"),
     LearnBackend(id: "agent-manual", name: "My own agent (manual)",
                  detail: "Writes a task file you hand to any coding agent (Hermes, OpenClaw, …).",
                  cliName: nil),
@@ -55,6 +57,7 @@ func cliAvailable(_ name: String?) -> Bool {
     guard let name else { return true }
     let dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
                 NSString(string: "~/.local/bin").expandingTildeInPath,
+                NSString(string: "~/.npm-global/bin").expandingTildeInPath,
                 NSString(string: "~/bin").expandingTildeInPath]
     return dirs.contains { FileManager.default.fileExists(atPath: "\($0)/\(name)") }
 }
