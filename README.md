@@ -10,7 +10,7 @@
 - **Notch glow** — an Apple-Intelligence-style light animation around the MacBook notch shows state: warm colors while recording, cool while transcribing, a green flash when the text lands. On external displays a virtual notch appears top-center.
 - **Fast** — whisper-large-v3-turbo on the GPU transcribes a phrase in ~2 s on an M-series Mac.
 - **Custom glossary** — domain terms you dictate ("spid dot center" → `spid.center`) are fixed two ways: the term list biases Whisper's decoder, and regex rules clean up what still slips through.
-- **Self-learning** — optionally, an LLM reviews your recent dictations and teaches the glossary new terms automatically. Works with a fully local LLM (Ollama) or CLI agents (Claude Code, Codex), or hand the task to any coding agent manually.
+- **Self-learning** — optionally, an LLM reviews your recent dictations and teaches the glossary new terms automatically. Works with a fully local LLM (Ollama) or CLI agents (Claude Code, Codex, Pi), or hand the task to any coding agent manually.
 - **Setup wizard** — pick your speech model and learning backend in a native settings window; everything is also editable from the terminal.
 - **Private by design** — audio, transcripts, and the glossary never leave your Mac (unless you explicitly choose a cloud-backed CLI for glossary learning).
 
@@ -60,7 +60,7 @@ Everything lives in `~/.whisperkey/config.json` and in **Settings…** (menu bar
 | Key | Default | Meaning |
 |---|---|---|
 | `model` | `mlx-community/whisper-large-v3-turbo` | MLX Whisper model (HF repo) |
-| `learnBackend` | `off` | `ollama` \| `claude` \| `codex` \| `agent-manual` \| `off` |
+| `learnBackend` | `off` | `ollama` \| `claude` \| `codex` \| `pi` \| `agent-manual` \| `off` |
 | `ollamaModel` | `qwen3:4b` | model for the Ollama backend |
 | `holdThreshold` | `0.35` | seconds separating a tap from a hold |
 | `learnEvery` | `20` | run glossary learning every N dictations |
@@ -85,7 +85,7 @@ curl -X POST localhost:8737/restart   # server reloads with the new model
 
 The file hot-reloads — edit it any time. To seed it from texts you already write, see `server/seed_glossary.py --help`.
 
-With a `learnBackend` configured, every 20 dictations (and on **Learn from recent dictation** in the menu) an LLM compares recent transcriptions against the glossary and appends new terms/rules. The `agent-manual` backend writes the task to `server/learn_request.md` instead — hand that file to whatever coding agent you use (see [AGENTS.md](AGENTS.md)).
+With a `learnBackend` configured, every 20 dictations (and on **Learn from recent dictation** in the menu) an LLM compares recent transcriptions against the glossary and appends new terms/rules. The `pi` backend runs `pi -p --no-session --no-tools` with your configured Pi provider and model; authenticate Pi before selecting it. The `agent-manual` backend writes the task to `server/learn_request.md` instead — hand that file to whatever coding agent you use (see [AGENTS.md](AGENTS.md)).
 
 ## Architecture
 

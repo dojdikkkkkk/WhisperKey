@@ -14,6 +14,9 @@ server/transcripts.jsonl
 server/learn_request.md
 *.log
 
+# local agent planning
+/docs/superpowers/
+
 # misc
 .DS_Store
 *.wav
