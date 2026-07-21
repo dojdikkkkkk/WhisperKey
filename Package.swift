@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "WhisperKey",
             path: "Sources/WhisperKey"
+        ),
+        .testTarget(
+            name: "WhisperKeyTests",
+            dependencies: ["WhisperKey"]
         )
     ]
 )
