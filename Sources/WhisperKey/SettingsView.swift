@@ -213,13 +213,110 @@ struct HistoryView: View {
 final class SettingsModel: ObservableObject {
     @Published var config = Config.shared
     @Published var serverStatus = "…"
+    @Published var selectedTranscriptionBackend = Config.shared.transcriptionBackend
+    @Published var cloudAPIKey = ""
+    @Published var hasCloudAPIKey = false
+    @Published var cloudValidationError: String?
+    var onActivate: (() -> Void)?
 
     func save(restartServer: Bool = false) {
-        config.save()
         if restartServer {
+            config.save()
             var req = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/restart")!)
             req.httpMethod = "POST"
             URLSession.shared.dataTask(with: req).resume()
+        } else {
+            // Backend controls are drafts until their explicit activation button.
+            var persisted = config
+            persisted.model = Config.shared.model
+            persisted.transcriptionBackend = Config.shared.transcriptionBackend
+            persisted.cloudProvider = Config.shared.cloudProvider
+            persisted.cloudEndpoint = Config.shared.cloudEndpoint
+            persisted.cloudModel = Config.shared.cloudModel
+            persisted.save()
+        }
+    }
+
+    func selectCloudProvider(_ provider: String) {
+        config.cloudProvider = provider
+        if provider == "groq" {
+            config.cloudEndpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
+            config.cloudModel = "whisper-large-v3-turbo"
+        }
+        cloudValidationError = nil
+    }
+
+    func activateLocal() {
+        selectedTranscriptionBackend = "local"
+        config.transcriptionBackend = "local"
+        config.setupComplete = true
+        cloudValidationError = nil
+        serverStatus = "starting…"
+        save(restartServer: true)
+        onActivate?()
+        pollHealthSoon()
+    }
+
+    func activateCloud() {
+        let endpoint = config.cloudEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = config.cloudModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let enteredKey = cloudAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard validateCloudEndpoint(endpoint) else {
+            cloudValidationError = "Enter a full HTTPS transcription endpoint (HTTP is allowed only for localhost)."
+            return
+        }
+        guard !model.isEmpty else {
+            cloudValidationError = "Enter a cloud transcription model."
+            return
+        }
+        guard enteredKey.rangeOfCharacter(from: .controlCharacters) == nil else {
+            cloudValidationError = "The API key contains invalid control characters."
+            return
+        }
+        do {
+            if !enteredKey.isEmpty {
+                try CloudAPIKeyStore.save(enteredKey)
+            } else if try CloudAPIKeyStore.load() == nil {
+                cloudValidationError = "Enter an API key. It will be stored in macOS Keychain."
+                return
+            }
+            hasCloudAPIKey = true
+        } catch {
+            cloudValidationError = "Could not save the API key in Keychain: \(error.localizedDescription)"
+            return
+        }
+
+        config.cloudEndpoint = endpoint
+        config.cloudModel = model
+        selectedTranscriptionBackend = "openai"
+        config.transcriptionBackend = "openai"
+        config.setupComplete = true
+        cloudAPIKey = ""
+        cloudValidationError = nil
+        serverStatus = "starting…"
+        save(restartServer: true)
+        TranscriptionNotifier.requestPermission()
+        onActivate?()
+        pollHealthSoon()
+    }
+
+    func deleteCloudAPIKey() {
+        do {
+            try CloudAPIKeyStore.delete()
+            cloudAPIKey = ""
+            hasCloudAPIKey = false
+            cloudValidationError = nil
+        } catch {
+            cloudValidationError = "Could not delete the Keychain API key: \(error.localizedDescription)"
+        }
+    }
+
+    func reloadCloudAPIKeyState() {
+        do {
+            hasCloudAPIKey = try CloudAPIKeyStore.load() != nil
+        } catch {
+            hasCloudAPIKey = false
+            cloudValidationError = "Could not read the Keychain API key: \(error.localizedDescription)"
         }
     }
 
@@ -229,11 +326,32 @@ final class SettingsModel: ObservableObject {
             var status = "server offline"
             if let data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let s = json["status"] as? String {
-                status = s == "ok" ? "ready" : "loading model…"
+               let value = json["status"] as? String {
+                switch value {
+                case "ok": status = "ready"
+                case "loading": status = "loading model…"
+                default: status = json["error"] as? String ?? "configuration error"
+                }
             }
             DispatchQueue.main.async { self.serverStatus = status }
         }.resume()
+    }
+
+    private func pollHealthSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.pollHealth() }
+    }
+
+    private func validateCloudEndpoint(_ value: String) -> Bool {
+        guard let parts = URLComponents(string: value),
+              let scheme = parts.scheme?.lowercased(),
+              let host = parts.host?.lowercased(),
+              !host.isEmpty, !parts.path.isEmpty,
+              parts.user == nil, parts.password == nil, parts.fragment == nil,
+              scheme == "https" || scheme == "http" else { return false }
+        if scheme == "http" {
+            return ["localhost", "127.0.0.1", "::1"].contains(host)
+        }
+        return true
     }
 }
 
@@ -247,37 +365,124 @@ struct SettingsView: View {
                 if isFirstRun {
                     Text("Welcome to WhisperKey")
                         .font(.largeTitle.bold())
-                    Text("Hold or tap the right ⌘ key to dictate anywhere. Pick a speech model and how the glossary should learn — you can change everything here later.")
+                    Text("Hold or tap the right ⌘ key to dictate anywhere. Choose local or cloud speech-to-text and how the glossary should learn — you can change everything here later.")
                         .foregroundStyle(.secondary)
                 }
 
-                section("Speech model", subtitle: "Server: \(model.serverStatus). Downloaded on first use, runs on the GPU.") {
-                    ForEach(sttModels) { m in
+                section("Speech-to-text", subtitle: "Server: \(model.serverStatus). Choose where your audio is transcribed.") {
+                    HStack(spacing: 10) {
                         Button {
-                            model.config.model = m.id
-                            model.save(restartServer: true)
+                            model.selectedTranscriptionBackend = "local"
+                            model.cloudValidationError = nil
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack(spacing: 8) {
-                                        Text(m.name).font(.headline)
-                                        if let note = m.note {
-                                            Text(note).font(.caption2.weight(.semibold))
-                                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                                .background(Capsule().fill(note == "Recommended" ? Color.accentColor.opacity(0.25) : Color.orange.opacity(0.25)))
-                                        }
-                                    }
-                                    Text("\(m.size) · \(m.speed) · \(m.quality)")
-                                        .font(.callout).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if model.config.model == m.id {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
-                                }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Local MLX").font(.headline)
+                                Text("Private · Apple Silicon GPU")
+                                    .font(.callout).foregroundStyle(.secondary)
                             }
                         }
                         .buttonStyle(.plain)
-                        .glassCard(selected: model.config.model == m.id)
+                        .glassCard(selected: model.selectedTranscriptionBackend == "local")
+
+                        Button {
+                            model.selectedTranscriptionBackend = "openai"
+                            model.cloudValidationError = nil
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Cloud API").font(.headline)
+                                Text("OpenAI-compatible endpoint")
+                                    .font(.callout).foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .glassCard(selected: model.selectedTranscriptionBackend == "openai")
+                    }
+
+                    if model.selectedTranscriptionBackend == "local" {
+                        ForEach(sttModels) { m in
+                            Button { model.config.model = m.id } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 8) {
+                                            Text(m.name).font(.headline)
+                                            if let note = m.note {
+                                                Text(note).font(.caption2.weight(.semibold))
+                                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                                    .background(Capsule().fill(note == "Recommended" ? Color.accentColor.opacity(0.25) : Color.orange.opacity(0.25)))
+                                            }
+                                        }
+                                        Text("\(m.size) · \(m.speed) · \(m.quality)")
+                                            .font(.callout).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if model.config.model == m.id {
+                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .glassCard(selected: model.config.model == m.id)
+                        }
+                        Button("Save & Use Local STT") { model.activateLocal() }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        HStack(spacing: 10) {
+                            Button { model.selectCloudProvider("groq") } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Groq").font(.headline)
+                                    Text("Preset").font(.callout).foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .glassCard(selected: model.config.cloudProvider == "groq")
+
+                            Button { model.selectCloudProvider("custom") } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Custom").font(.headline)
+                                    Text("Your endpoint")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .glassCard(selected: model.config.cloudProvider == "custom")
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Endpoint").frame(width: 72, alignment: .leading)
+                                TextField("https://…/audio/transcriptions", text: Binding(
+                                    get: { model.config.cloudEndpoint },
+                                    set: { model.config.cloudEndpoint = $0 }))
+                                    .textFieldStyle(.roundedBorder)
+                                    .disabled(model.config.cloudProvider == "groq")
+                            }
+                            HStack {
+                                Text("Model").frame(width: 72, alignment: .leading)
+                                TextField("whisper-large-v3-turbo", text: Binding(
+                                    get: { model.config.cloudModel },
+                                    set: { model.config.cloudModel = $0 }))
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                            HStack {
+                                Text("API key").frame(width: 72, alignment: .leading)
+                                SecureField(model.hasCloudAPIKey ? "Saved — enter to replace" : "Required", text: $model.cloudAPIKey)
+                                    .textFieldStyle(.roundedBorder)
+                                if model.hasCloudAPIKey {
+                                    Button("Delete") { model.deleteCloudAPIKey() }
+                                }
+                            }
+                            if model.hasCloudAPIKey {
+                                Text("API key saved in macOS Keychain.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .glassCard()
+
+                        if let error = model.cloudValidationError {
+                            Text(error).font(.callout).foregroundStyle(.red)
+                        }
+                        Button("Save & Use Cloud STT") { model.activateCloud() }
+                            .buttonStyle(.borderedProminent)
                     }
                 }
 
@@ -344,13 +549,21 @@ struct SettingsView: View {
                         set: { model.config.debugLog = $0; model.save() }))
                 }
 
-                Text("Everything runs on this Mac. Audio and text never leave it (unless you pick a cloud-backed CLI for learning).")
-                    .font(.footnote).foregroundStyle(.secondary)
+                if model.selectedTranscriptionBackend == "openai" {
+                    Text("Cloud mode sends recorded audio and glossary prompt terms to your configured provider. The API key is stored in macOS Keychain.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Text("Local STT runs on this Mac. Audio and text stay local unless you pick a cloud-backed CLI for glossary learning.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
             .padding(24)
         }
         .frame(width: 520, height: isFirstRun ? 680 : 620)
-        .onAppear { model.pollHealth() }
+        .onAppear {
+            model.reloadCloudAPIKeyState()
+            model.pollHealth()
+        }
     }
 
     @ViewBuilder
@@ -394,12 +607,19 @@ struct SettingsRootView: View {
 
 final class SettingsWindowController {
     private var window: NSWindow?
-    private let model = SettingsModel()
+    private let model: SettingsModel
     private let tabs = SettingsTabState()
     private let history = HistoryModel()
 
+    init(onActivate: @escaping () -> Void = {}) {
+        model = SettingsModel()
+        model.onActivate = onActivate
+    }
+
     func show(firstRun: Bool = false, historyTab: Bool = false) {
         model.config = Config.shared
+        model.selectedTranscriptionBackend = model.config.transcriptionBackend
+        model.reloadCloudAPIKeyState()
         model.pollHealth()
         tabs.tab = historyTab ? 1 : 0
         history.entries = TranscriptHistory.load()
