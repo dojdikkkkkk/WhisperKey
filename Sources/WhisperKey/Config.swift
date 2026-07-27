@@ -7,6 +7,11 @@ struct Config: Codable {
     var serverDir: String
     var port: Int
     var model: String
+    var transcriptionBackend: String   // "local" | "openai"
+    var cloudProvider: String           // "groq" | "custom"
+    var cloudEndpoint: String
+    var cloudModel: String
+    var setupComplete: Bool
     var holdThreshold: Double
     var learnBackend: String   // "ollama" | "claude" | "codex" | "agent-manual" | "off"
     var learnEvery: Int
@@ -21,6 +26,11 @@ struct Config: Codable {
         serverDir: NSString(string: "~/WhisperKey/server").expandingTildeInPath,
         port: 8737,
         model: "mlx-community/whisper-large-v3-turbo",
+        transcriptionBackend: "local",
+        cloudProvider: "groq",
+        cloudEndpoint: "https://api.groq.com/openai/v1/audio/transcriptions",
+        cloudModel: "whisper-large-v3-turbo",
+        setupComplete: true,
         holdThreshold: 0.35,
         learnBackend: "off",
         learnEvery: 20,
@@ -29,15 +39,13 @@ struct Config: Codable {
         debugLog: false
     )
 
-    /// True when no config file existed before this launch — the app shows the setup wizard.
-    static private(set) var isFirstRun = false
-
     static var shared: Config = load()
 
     static func load() -> Config {
         guard let data = FileManager.default.contents(atPath: path) else {
-            isFirstRun = true
-            return defaults
+            var c = defaults
+            c.setupComplete = false
+            return c
         }
         // tolerate hand-edited files with missing keys
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -47,6 +55,12 @@ struct Config: Codable {
         if let v = json["serverDir"] as? String { c.serverDir = NSString(string: v).expandingTildeInPath }
         if let v = json["port"] as? Int { c.port = v }
         if let v = json["model"] as? String { c.model = v }
+        if let v = json["transcriptionBackend"] as? String { c.transcriptionBackend = v }
+        if let v = json["cloudProvider"] as? String { c.cloudProvider = v }
+        if let v = json["cloudEndpoint"] as? String { c.cloudEndpoint = v }
+        if let v = json["cloudModel"] as? String { c.cloudModel = v }
+        // Existing configs predate this flag and are already fully set up.
+        if let v = json["setupComplete"] as? Bool { c.setupComplete = v }
         if let v = json["holdThreshold"] as? Double { c.holdThreshold = v }
         if let v = json["learnBackend"] as? String { c.learnBackend = v }
         if let v = json["learnEvery"] as? Int { c.learnEvery = v }

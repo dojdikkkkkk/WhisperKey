@@ -5,10 +5,12 @@ install, fix, or maintain WhisperKey. This file is your runbook.
 
 ## What this is
 
-Offline dictation for macOS: a Swift menu-bar app captures the right-⌘ hotkey and the
-microphone, a local Python server (`server/transcribe_server.py`, port 8737) runs MLX
-Whisper on the GPU, and the recognized text is delivered into the focused app.
-Config: `~/.whisperkey/config.json`. Glossary: `server/glossary.json` (hot-reloaded).
+Local-first dictation for macOS: a Swift menu-bar app captures the right-⌘ hotkey and
+the microphone, while a local Python gateway (`server/transcribe_server.py`, port 8737)
+either runs MLX Whisper on the GPU or forwards audio to a configured OpenAI-compatible
+STT API. Recognized text is delivered into the focused app. Config:
+`~/.whisperkey/config.json`. Cloud API key: macOS Keychain only. Glossary:
+`server/glossary.json` (hot-reloaded).
 
 ## Installing for your user
 
@@ -29,14 +31,17 @@ Config: `~/.whisperkey/config.json`. Glossary: `server/glossary.json` (hot-reloa
    - Cleaning stale duplicate entries: `tccutil reset Accessibility dev.whisperkey.app`.
 4. Verify end-to-end without asking the user to speak:
    ```bash
-   # server up and model loaded?
-   curl -s localhost:8737/health          # {"status":"ok",...}
+   # server up and backend ready?
+   curl -s localhost:8737/health          # {"status":"ok","backend":..., ...}
    # transcription works? (synthesize speech through the speakers is unreliable in CI;
    # prefer a sample wav)
    say -v Milena -o /tmp/wk-test.wav --data-format=LEI16@16000 "проверка диктовки" \
      && curl -s --data-binary @/tmp/wk-test.wav localhost:8737/transcribe
    ```
-   (Use the port from config; default 8737.)
+   (Use the port from config; default 8737.) For cloud mode, use the app so Swift
+   reads the credential from Keychain; never print or copy the credential into logs or
+   shell history. Validate the provider contract without a real key using:
+   `server/venv/bin/python -m unittest discover -s server -p 'test_cloud*.py'`.
 5. Check the logs when debugging: `server/server.log`, and `~/.whisperkey/debug.log`
    after setting `"debugLog": true` in the config (then restart the app).
 
@@ -58,11 +63,14 @@ Seed the glossary from the user's existing texts (with their permission):
 `server/seed_glossary.py <paths>` prints candidate terms — curate together with the
 user, never dump hundreds of terms (the decoder hint degrades past ~150 words).
 
-## Changing the speech model
+## Changing the speech backend or model
 
-Edit `"model"` in `~/.whisperkey/config.json` (any `mlx-community/whisper-*` HF repo),
-then `curl -X POST localhost:8737/restart`. Poll `/health` until `"status":"ok"` —
-first load downloads the weights.
+Prefer **Settings… → Speech-to-text**. Local mode uses `"transcriptionBackend":
+"local"` and `"model"` (any `mlx-community/whisper-*` HF repo). Cloud mode uses
+`"transcriptionBackend": "openai"`, `"cloudEndpoint"`, and `"cloudModel"`; its key
+must remain in Keychain and must never be added to config. Restart with
+`curl -X POST localhost:8737/restart`, then poll `/health` until `"status":"ok"`.
+Local model weights download only when Local mode warms that model.
 
 ## Code map (for fixes)
 
@@ -71,7 +79,9 @@ first load downloads the weights.
 - `Sources/WhisperKey/TextInserter.swift` — delivery cascade: AX → unicode typing → clipboard.
   macOS quirk: the unicode string must be attached to keyDown ONLY.
 - `Sources/WhisperKey/SettingsView.swift` — settings window / setup wizard
-- `server/transcribe_server.py` — HTTP API: /health /transcribe /learn /restart
+- `Sources/WhisperKey/CloudAPIKeyStore.swift` — cloud STT credential in Keychain
+- `server/cloud_stt.py` — OpenAI-compatible multipart client and safe errors
+- `server/transcribe_server.py` — local/cloud gateway: /health /transcribe /learn /restart
 - `server/learn.py` — glossary learning backends
 - Build gotcha: with only Command Line Tools, SwiftUI `@State` (a macro in the
   macOS 26+ SDK) fails to compile — this codebase avoids it deliberately

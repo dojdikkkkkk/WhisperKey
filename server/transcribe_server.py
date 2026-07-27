@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """WhisperKey transcription server.
 
-Loads an MLX Whisper model once and serves POST /transcribe (WAV body -> text).
-A glossary (glossary.json) biases decoding via initial_prompt and fixes mangled
-domain terms with regex rules. Transcriptions are logged to transcripts.jsonl
+Serves POST /transcribe (WAV body -> text) through either local MLX Whisper or
+an OpenAI-compatible cloud endpoint. A glossary (glossary.json) biases decoding
+via a prompt and fixes mangled domain terms with regex rules. Transcriptions are
+logged to transcripts.jsonl
 (configurable) as raw material for the self-learning cycle (learn.py).
 
 Configuration lives in ~/.whisperkey/config.json and is shared with the app.
 Bound to localhost only.
 """
 
+import array
 import io
 import json
 import os
@@ -22,8 +24,7 @@ import wave
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import mlx_whisper
-import numpy as np
+from cloud_stt import CloudSTTError, transcribe as transcribe_cloud
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.expanduser("~/.whisperkey/config.json")
@@ -34,6 +35,9 @@ SILENCE_PEAK = 0.004  # normalized amplitude below which we skip transcription
 DEFAULTS = {
     "port": 8737,
     "model": "mlx-community/whisper-large-v3-turbo",
+    "transcriptionBackend": "local",
+    "cloudEndpoint": "https://api.groq.com/openai/v1/audio/transcriptions",
+    "cloudModel": "whisper-large-v3-turbo",
     "learnBackend": "off",
     "learnEvery": 20,
     "logTranscripts": True,
@@ -53,25 +57,56 @@ def load_config():
 config = load_config()
 HOST = "127.0.0.1"
 PORT = int(config["port"])
-MODEL_NAME = config["model"]
+BACKEND = config.get("transcriptionBackend", "local")
+LOCAL_MODEL_NAME = config["model"]
+CLOUD_ENDPOINT = config["cloudEndpoint"]
+CLOUD_MODEL = config["cloudModel"]
+ACTIVE_MODEL = CLOUD_MODEL if BACKEND == "openai" else LOCAL_MODEL_NAME
 
-model_ready = False
-print(f"Warming up {MODEL_NAME}...", flush=True)
-t0 = time.time()
+model_ready = BACKEND == "openai"
+backend_error = "" if BACKEND in {"local", "openai"} else f"unknown backend: {BACKEND}"
+mlx_whisper = None
+warm_started_at = 0.0
 
 
 def warm_up():
-    global model_ready
-    mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo=MODEL_NAME)
-    model_ready = True
-    print(f"Model warm in {time.time() - t0:.1f}s", flush=True)
+    global mlx_whisper, model_ready
+    try:
+        import mlx_whisper as mlx_module
+        import numpy as np
+
+        mlx_whisper = mlx_module
+        mlx_whisper.transcribe(
+            np.zeros(16000, dtype=np.float32), path_or_hf_repo=LOCAL_MODEL_NAME
+        )
+        model_ready = True
+        print(f"Model warm in {time.time() - warm_started_at:.1f}s", flush=True)
+    except Exception as error:
+        print(f"Model warm-up failed: {error}", flush=True)
+
+
+def wav_frames(data):
+    """Read PCM frames from a mono 16-bit WAV recording."""
+    with wave.open(io.BytesIO(data)) as wav:
+        if wav.getnchannels() != 1 or wav.getsampwidth() != 2:
+            raise ValueError("expected mono 16-bit WAV audio")
+        return wav.readframes(wav.getnframes())
+
+
+def wav_peak(data):
+    """Return normalized peak amplitude without importing MLX or NumPy."""
+    samples = array.array("h")
+    samples.frombytes(wav_frames(data))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return max((abs(sample) for sample in samples), default=0) / 32768.0
 
 
 def wav_to_float32(data):
-    """Decode 16 kHz mono 16-bit WAV bytes into a normalized float32 array."""
-    with wave.open(io.BytesIO(data)) as w:
-        frames = w.readframes(w.getnframes())
-    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    """Decode mono 16-bit WAV bytes into a normalized float32 array."""
+    import numpy as np
+
+    return np.frombuffer(wav_frames(data), dtype=np.int16).astype(np.float32) / 32768.0
 
 
 class Glossary:
@@ -175,9 +210,12 @@ def restart_soon():
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
+            status = "error" if backend_error else ("ok" if model_ready else "loading")
             self._respond(200, {
-                "status": "ok" if model_ready else "loading",
-                "model": MODEL_NAME,
+                "status": status,
+                "backend": BACKEND,
+                "model": ACTIVE_MODEL,
+                **({"error": backend_error} if backend_error else {}),
             })
         else:
             self._respond(404, {"error": "not found"})
@@ -198,6 +236,9 @@ class Handler(BaseHTTPRequestHandler):
         if length == 0:
             self._respond(400, {"error": "empty body"})
             return
+        if backend_error:
+            self._respond(503, {"error": backend_error})
+            return
         if not model_ready:
             self._respond(503, {"error": "model is still loading"})
             return
@@ -205,23 +246,36 @@ class Handler(BaseHTTPRequestHandler):
         glossary.reload_if_changed()
         t0 = time.time()
         try:
-            audio = wav_to_float32(body)
-            # mlx-whisper has no VAD — gate out silent recordings ourselves,
-            # otherwise the model hallucinates on empty audio
-            if audio.size == 0 or np.abs(audio).max() < SILENCE_PEAK:
+            # Gate silence before either backend. This avoids local hallucinations
+            # and unnecessary cloud requests.
+            if wav_peak(body) < SILENCE_PEAK:
                 print("Skipped silent recording", flush=True)
                 self._respond(200, {"text": "", "language": "", "seconds": 0})
                 return
-            result = mlx_whisper.transcribe(
-                audio,
-                path_or_hf_repo=MODEL_NAME,
-                condition_on_previous_text=False,  # faster, prevents repetition loops
-                initial_prompt=glossary.prompt or None,
-            )
+            if BACKEND == "openai":
+                result = transcribe_cloud(
+                    endpoint=CLOUD_ENDPOINT,
+                    model=CLOUD_MODEL,
+                    api_key=self.headers.get("X-WhisperKey-API-Key", ""),
+                    wav_data=body,
+                    prompt=glossary.prompt,
+                )
+            else:
+                audio = wav_to_float32(body)
+                result = mlx_whisper.transcribe(
+                    audio,
+                    path_or_hf_repo=LOCAL_MODEL_NAME,
+                    condition_on_previous_text=False,  # faster, prevents repetition loops
+                    initial_prompt=glossary.prompt or None,
+                )
             raw = result["text"].strip()
             language = result.get("language", "")
-        except Exception as e:
-            self._respond(500, {"error": str(e)})
+        except CloudSTTError as error:
+            print(f"Cloud transcription failed: {error}", flush=True)
+            self._respond(502, {"error": str(error)})
+            return
+        except Exception as error:
+            self._respond(500, {"error": str(error)})
             return
         text = glossary.apply_rules(raw)
         elapsed = time.time() - t0
@@ -249,7 +303,14 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    threading.Thread(target=warm_up, daemon=True).start()
+    if BACKEND == "local":
+        warm_started_at = time.time()
+        print(f"Warming up {LOCAL_MODEL_NAME}...", flush=True)
+        threading.Thread(target=warm_up, daemon=True).start()
+    elif BACKEND == "openai":
+        print(f"Cloud STT ready: {CLOUD_MODEL}", flush=True)
+    else:
+        print(f"Configuration error: {backend_error}", flush=True)
     print(f"Listening on {HOST}:{PORT}", flush=True)
     try:
         server.serve_forever()
