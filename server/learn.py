@@ -8,6 +8,7 @@ in ~/.whisperkey/config.json (key "learnBackend"):
   ollama        — local LLM via the Ollama HTTP API (default model qwen3:4b)
   claude        — Claude Code CLI (`claude -p`, haiku model)
   codex         — Codex CLI (`codex exec`)
+  pi            — Pi CLI (`pi -p --no-session --no-tools`)
   agent-manual  — writes the task to learn_request.md for ANY coding agent
                   (Hermes, OpenClaw, ...) to fulfil by hand
   off           — disabled
@@ -115,6 +116,19 @@ def backend_codex(prompt, cfg):
     return r.stdout
 
 
+def backend_pi(prompt, cfg):
+    cli = find_cli("pi", (os.path.expanduser("~/.npm-global/bin/pi"),))
+    if not cli:
+        raise RuntimeError("pi CLI not found — install Pi or switch learnBackend")
+    r = subprocess.run(
+        [cli, "-p", "--no-session", "--no-tools", prompt],
+        capture_output=True, text=True, timeout=240,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"pi failed: {r.stderr[-300:]}")
+    return r.stdout
+
+
 def backend_agent_manual(prompt, cfg):
     """No LLM call: write the task to a file for the user's own coding agent."""
     instructions = (
@@ -136,6 +150,7 @@ BACKENDS = {
     "ollama": backend_ollama,
     "claude": backend_claude,
     "codex": backend_codex,
+    "pi": backend_pi,
     "agent-manual": backend_agent_manual,
 }
 

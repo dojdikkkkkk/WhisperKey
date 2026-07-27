@@ -10,7 +10,7 @@
 - **Notch glow** — an Apple-Intelligence-style light animation around the MacBook notch shows state: warm colors while recording, cool while transcribing, a green flash when the text lands. On external displays a virtual notch appears top-center.
 - **Local or cloud STT** — run whisper-large-v3-turbo on the GPU, use the built-in Groq preset, or configure another OpenAI-compatible transcription endpoint.
 - **Custom glossary** — domain terms you dictate ("spid dot center" → `spid.center`) are fixed two ways: the term list biases Whisper's decoder, and regex rules clean up what still slips through.
-- **Self-learning** — optionally, an LLM reviews your recent dictations and teaches the glossary new terms automatically. Works with a fully local LLM (Ollama) or CLI agents (Claude Code, Codex), or hand the task to any coding agent manually.
+- **Self-learning** — optionally, an LLM reviews your recent dictations and teaches the glossary new terms automatically. Works with a fully local LLM (Ollama) or CLI agents (Claude Code, Codex, Pi), or hand the task to any coding agent manually.
 - **Setup wizard** — choose Local MLX or Cloud API, then pick your speech model and learning backend in a native settings window.
 - **Private by design** — Local MLX keeps audio on your Mac. Cloud mode stores the API key in macOS Keychain and sends audio only to the endpoint you configure.
 
@@ -64,7 +64,7 @@ Everything lives in `~/.whisperkey/config.json` and in **Settings…** (menu bar
 | `cloudProvider` | `groq` | `groq` \| `custom` |
 | `cloudEndpoint` | Groq transcription URL | Full OpenAI-compatible `/audio/transcriptions` endpoint |
 | `cloudModel` | `whisper-large-v3-turbo` | provider-specific transcription model |
-| `learnBackend` | `off` | `ollama` \| `claude` \| `codex` \| `agent-manual` \| `off` |
+| `learnBackend` | `off` | `ollama` \| `claude` \| `codex` \| `pi` \| `agent-manual` \| `off` |
 | `ollamaModel` | `qwen3:4b` | model for the Ollama backend |
 | `holdThreshold` | `0.35` | seconds separating a tap from a hold |
 | `learnEvery` | `20` | run glossary learning every N dictations |
@@ -102,7 +102,7 @@ Cloud mode sends recorded audio and glossary prompt terms to the configured prov
 
 The file hot-reloads — edit it any time. To seed it from texts you already write, see `server/seed_glossary.py --help`.
 
-With a `learnBackend` configured, every 20 dictations (and on **Learn from recent dictation** in the menu) an LLM compares recent transcriptions against the glossary and appends new terms/rules. The `agent-manual` backend writes the task to `server/learn_request.md` instead — hand that file to whatever coding agent you use (see [AGENTS.md](AGENTS.md)).
+With a `learnBackend` configured, every 20 dictations (and on **Learn from recent dictation** in the menu) an LLM compares recent transcriptions against the glossary and appends new terms/rules. The `pi` backend runs `pi -p --no-session --no-tools` with your configured Pi provider and model; authenticate Pi before selecting it. The `agent-manual` backend writes the task to `server/learn_request.md` instead — hand that file to whatever coding agent you use (see [AGENTS.md](AGENTS.md)).
 
 ## Architecture
 

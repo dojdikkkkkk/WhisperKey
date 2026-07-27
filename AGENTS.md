@@ -58,6 +58,8 @@ Ask the user which backend they want, then set `learnBackend` in
 - **Ollama installed** (`ollama --version` works): `"learnBackend": "ollama"`,
   make sure the model is pulled: `ollama pull qwen3:4b`.
 - **Claude Code / Codex CLI**: `"learnBackend": "claude"` or `"codex"`.
+- **Pi installed and authenticated** (`pi --version` works): `"learnBackend": "pi"`.
+  Learning uses Pi's configured provider and model in one-shot, no-tools mode.
 
 Seed the glossary from the user's existing texts (with their permission):
 `server/seed_glossary.py <paths>` prints candidate terms — curate together with the
@@ -86,3 +88,8 @@ Local model weights download only when Local mode warms that model.
 - Build gotcha: with only Command Line Tools, SwiftUI `@State` (a macro in the
   macOS 26+ SDK) fails to compile — this codebase avoids it deliberately
   (TimelineView / ObservableObject instead). Keep it that way or require full Xcode.
+- Test gotcha: `swift test` needs full Xcode — XCTest ships with Xcode, not with
+  Command Line Tools, so `Tests/WhisperKeyTests` cannot build under CLT alone.
+  `swift build` skips test targets and works fine; CI builds only. Keep Swift-side
+  logic testable as pure functions, and rely on the Python suite for coverage
+  (`python3 -m unittest discover -s server -p 'test_*.py'`).

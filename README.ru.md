@@ -10,7 +10,7 @@
 - **Свечение моноброви** — анимация в стиле Apple Intelligence вокруг выреза MacBook: тёплые цвета — запись, холодные — распознавание, зелёная вспышка — текст вставлен. На внешнем мониторе рисуется виртуальная монобровь.
 - **Локальный или облачный STT** — whisper-large-v3-turbo на GPU, готовый пресет Groq или другой OpenAI-совместимый endpoint.
 - **Словарь терминов** — «спид точка центер» → `spid.center`: список терминов подсказывает декодеру Whisper, regex-правила добивают остальное.
-- **Самообучение** — LLM просматривает свежие диктовки и сам дописывает словарь. Работает с локальной LLM (Ollama), CLI-агентами (Claude Code, Codex) или вручную через любого агента.
+- **Самообучение** — LLM просматривает свежие диктовки и сам дописывает словарь. Работает с локальной LLM (Ollama), CLI-агентами (Claude Code, Codex, Pi) или вручную через любого агента.
 - **Мастер настройки** — выбор Local MLX или Cloud API, модели и способа обучения в нативном окне.
 - **Приватность** — Local MLX оставляет аудио на Mac. В Cloud API ключ хранится в macOS Keychain, а аудио уходит только на указанный endpoint.
 
@@ -40,7 +40,7 @@ System Settings → Privacy & Security: **Microphone** и **Accessibility** (У�
 
 ## Настройка
 
-Конфиг: `~/.whisperkey/config.json` + окно **Settings…** в меню-баре. Основные ключи STT: `transcriptionBackend` (`local`/`openai`), `model` для Local MLX, а также `cloudProvider`, `cloudEndpoint` и `cloudModel` для Cloud API. API-ключ хранится отдельно в macOS Keychain и в JSON не записывается. Остальные ключи: `learnBackend` (`ollama`/`claude`/`codex`/`agent-manual`/`off`), `ollamaModel`, `holdThreshold`, `learnEvery`, `logTranscripts`.
+Конфиг: `~/.whisperkey/config.json` + окно **Settings…** в меню-баре. Основные ключи STT: `transcriptionBackend` (`local`/`openai`), `model` для Local MLX, а также `cloudProvider`, `cloudEndpoint` и `cloudModel` для Cloud API. API-ключ хранится отдельно в macOS Keychain и в JSON не записывается. Остальные ключи: `learnBackend` (`ollama`/`claude`/`codex`/`pi`/`agent-manual`/`off`), `ollamaModel`, `holdThreshold`, `learnEvery`, `logTranscripts`.
 
 ### Облачное распознавание
 
@@ -50,7 +50,7 @@ System Settings → Privacy & Security: **Microphone** и **Accessibility** (У�
 
 ## Словарь и самообучение
 
-`server/glossary.json`: `terms` (подсказка активному STT-бэкенду) + `rules` (regex-замены). Файл перечитывается на лету. Засев из своих текстов: `server/seed_glossary.py --help`. С включённым `learnBackend` словарь пополняется сам каждые 20 диктовок; бэкенд `agent-manual` пишет задание в `server/learn_request.md` для любого твоего агента (см. [AGENTS.md](AGENTS.md)).
+`server/glossary.json`: `terms` (подсказка активному STT-бэкенду) + `rules` (regex-замены). Файл перечитывается на лету. Засев из своих текстов: `server/seed_glossary.py --help`. С включённым `learnBackend` словарь пополняется сам каждые 20 диктовок. Бэкенд `pi` запускает `pi -p --no-session --no-tools` с настроенными в Pi провайдером и моделью; перед выбором войди в Pi. Бэкенд `agent-manual` пишет задание в `server/learn_request.md` для любого твоего агента (см. [AGENTS.md](AGENTS.md)).
 
 ## Диагностика
 
