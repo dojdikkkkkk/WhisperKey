@@ -4,11 +4,29 @@ import ApplicationServices
 /// Delivers transcribed text to the frontmost app's focused field.
 ///
 /// Cascade of strategies, each logged to debug.log:
-///  1. AX API — write to the focused element's selected-text attribute (no key events at all)
-///  2. Unicode typing — synthesized keyboard events with the string on keyDown
-///  3. Clipboard + Cmd+V — last resort
+///  1. Electron apps — clipboard + Cmd+V because they can falsely report AX success
+///  2. AX API — write to the focused element's selected-text attribute (no key events at all)
+///  3. Unicode typing — synthesized keyboard events with the string on keyDown
+///  4. Clipboard + Cmd+V — last resort
 enum TextInserter {
+    enum PreferredStrategy: Equatable {
+        case standard
+        case pasteboard
+    }
+
+    static func preferredStrategy(for appBundleURL: URL?) -> PreferredStrategy {
+        guard let appBundleURL else { return .standard }
+        let electronFramework = appBundleURL
+            .appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        return FileManager.default.fileExists(atPath: electronFramework.path) ? .pasteboard : .standard
+    }
+
     static func insert(_ text: String) {
+        if preferredStrategy(for: NSWorkspace.shared.frontmostApplication?.bundleURL) == .pasteboard {
+            insertViaPasteboard(text)
+            debugLog("insert: Electron clipboard+CmdV")
+            return
+        }
         if insertViaAX(text) {
             debugLog("insert: AX ok (\(text.count) chars)")
             return
