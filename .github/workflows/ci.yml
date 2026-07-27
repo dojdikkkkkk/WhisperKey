@@ -13,5 +13,7 @@ jobs:
         run: swift build
       - name: Check Python syntax
         run: python3 -m py_compile server/*.py
+      - name: Run Python tests
+        run: python3 -m unittest discover -s server -p 'test_*.py'
       - name: Shellcheck-lite
         run: bash -n install.sh build.sh server/setup.sh
