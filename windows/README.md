@@ -1,20 +1,66 @@
-# WhisperKey for Windows — roadmap
+# WhisperKey for Windows
 
-Not built yet. Architecture notes for the port:
+Native-feeling, local-first dictation for Windows 10/11. It mirrors the macOS
+WhisperKey interaction:
 
-- **Tray app** (C# / WinUI or Python + pystray) instead of the menu bar app.
-- **Hotkey**: right-Ctrl or right-Win via `RegisterHotKey` / low-level keyboard hook
-  (`WH_KEYBOARD_LL`) — modifier-only hotkeys need the hook, same tap/hold state
-  machine as `HotkeyMonitor.swift`.
-- **STT backend**: the same HTTP server contract (`/health`, `/transcribe`, `/learn`,
-  `/restart`), but `faster-whisper` (CTranslate2) with CUDA when available, CPU
-  int8 otherwise — MLX is Apple-only.
-- **Text delivery**: `SendInput` with `KEYEVENTF_UNICODE` (the Windows twin of the
-  unicode-typing strategy), UI Automation `ValuePattern` as the AX-equivalent.
-- **Indicator**: borderless always-on-top layered window, top-center — the "virtual
-  notch" mode already designed for external displays.
+- hold **right Ctrl** to talk, then release to transcribe;
+- tap **right Ctrl** to start a longer recording, tap again to finish;
+- normal right-Ctrl shortcuts are ignored by dictation;
+- text is typed into the window that was focused when recording started;
+- a top-centre island shows recording, transcription, and completion states.
 
-The glossary format, learning backends (`server/learn.py`), and config schema are
-platform-independent and will be reused as-is.
+The hotkey can be changed to right-Win in Settings. Local recognition uses
+[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper): CUDA/float16 is
+selected automatically when a compatible NVIDIA GPU is available, otherwise
+CPU/int8 is used. The first local dictation downloads the selected model.
 
-Contributions welcome — open an issue if you want to take this.
+## Install
+
+Download `WhisperKey-Windows-x64.zip` from the Windows release, extract it, and
+run `WhisperKey.exe`. On first launch:
+
+1. Choose the local model (`small` is the balanced default).
+2. Allow microphone access if Windows asks.
+3. Save Settings. WhisperKey stays in the system tray.
+
+Windows may show a SmartScreen warning for unsigned community builds. Choose
+**More info → Run anyway** only when the file came from the official repository.
+
+Configuration, logs, glossary, and dictation history live in
+`%USERPROFILE%\.whisperkey`. Cloud API credentials are stored in Windows
+Credential Manager and never written to `config.json`.
+
+## Build locally
+
+Python 3.11 or 3.12 is required:
+
+```powershell
+cd windows
+.\build.ps1
+```
+
+The portable distribution is written to `windows\dist\WhisperKey`.
+
+Run tests:
+
+```powershell
+$env:PYTHONPATH = "$PWD\app"
+python -m unittest discover -s tests -v
+```
+
+## Architecture
+
+```text
+right Ctrl ──▶ keyboard hook ──▶ WAV recorder
+                                    │
+                                    ▼
+                            localhost:8737
+                          faster-whisper/cloud
+                                    │
+                                    ▼
+                       SendInput(KEYEVENTF_UNICODE)
+```
+
+The executable starts a second copy of itself with `--server`, preserving the
+same local HTTP contract as the macOS implementation: `GET /health` and
+`POST /transcribe`.

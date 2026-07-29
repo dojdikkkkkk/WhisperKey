@@ -6,6 +6,8 @@ AppIcon.iconset/
 
 # python
 server/venv/
+windows/.venv/
+windows/dist/
 __pycache__/
 
 # user data — never commit personal glossaries or dictation logs
