@@ -39,6 +39,18 @@ final class TranscriptionClient {
         URLSession.shared.dataTask(with: req).resume()
     }
 
+    /// Best-effort request: the server decides whether the model has been idle long enough.
+    func warmUpIfNeeded(afterWake: Bool = false) {
+        guard Config.shared.transcriptionBackend == "local" else { return }
+        var req = URLRequest(url: baseURL.appendingPathComponent("warm"))
+        req.httpMethod = "POST"
+        if afterWake { req.setValue("wake", forHTTPHeaderField: "X-WhisperKey-Warm-Reason") }
+        req.timeoutInterval = 2
+        URLSession.shared.dataTask(with: req) { _, _, error in
+            if let error { debugLog("warm-up request failed: \(error.localizedDescription)") }
+        }.resume()
+    }
+
     func transcribe(wavURL: URL, completion: @escaping (String?) -> Void) {
         guard let data = try? Data(contentsOf: wavURL) else {
             reportFailure("Could not read the recorded audio", cloud: false, completion: completion)

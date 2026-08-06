@@ -222,22 +222,29 @@ final class SettingsModel: ObservableObject {
     @Published var cloudValidationError: String?
     var onActivate: (() -> Void)?
 
-    func save(restartServer: Bool = false) {
-        if restartServer {
-            config.save()
-            var req = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/restart")!)
-            req.httpMethod = "POST"
-            URLSession.shared.dataTask(with: req).resume()
-        } else {
-            // Backend controls are drafts until their explicit activation button.
-            var persisted = config
-            persisted.model = Config.shared.model
-            persisted.transcriptionBackend = Config.shared.transcriptionBackend
-            persisted.cloudProvider = Config.shared.cloudProvider
-            persisted.cloudEndpoint = Config.shared.cloudEndpoint
-            persisted.cloudModel = Config.shared.cloudModel
-            persisted.save()
-        }
+    func save() {
+        // Backend controls are drafts until their explicit activation button.
+        var persisted = config
+        persisted.model = Config.shared.model
+        persisted.transcriptionBackend = Config.shared.transcriptionBackend
+        persisted.cloudProvider = Config.shared.cloudProvider
+        persisted.cloudEndpoint = Config.shared.cloudEndpoint
+        persisted.cloudModel = Config.shared.cloudModel
+        persisted.save()
+    }
+
+    private func saveActivatedSTT(restartServer: Bool) {
+        config.save()
+        guard restartServer else { return }
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/restart")!)
+        req.httpMethod = "POST"
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    func saveLanguage() {
+        let language = config.language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        config.language = language.isEmpty ? "auto" : language
+        save()
     }
 
     func selectCloudProvider(_ provider: String) {
@@ -250,12 +257,14 @@ final class SettingsModel: ObservableObject {
     }
 
     func activateLocal() {
+        let active = Config.shared
         selectedTranscriptionBackend = "local"
         config.transcriptionBackend = "local"
         config.setupComplete = true
         cloudValidationError = nil
-        serverStatus = "starting…"
-        save(restartServer: true)
+        let restart = active.transcriptionBackend != "local" || active.model != config.model
+        serverStatus = restart ? "starting…" : serverStatus
+        saveActivatedSTT(restartServer: restart)
         onActivate?()
         pollHealthSoon()
     }
@@ -289,6 +298,7 @@ final class SettingsModel: ObservableObject {
             return
         }
 
+        let active = Config.shared
         config.cloudEndpoint = endpoint
         config.cloudModel = model
         selectedTranscriptionBackend = "openai"
@@ -296,8 +306,10 @@ final class SettingsModel: ObservableObject {
         config.setupComplete = true
         cloudAPIKey = ""
         cloudValidationError = nil
-        serverStatus = "starting…"
-        save(restartServer: true)
+        let restart = active.transcriptionBackend != "openai"
+            || active.cloudEndpoint != endpoint || active.cloudModel != model
+        serverStatus = restart ? "starting…" : serverStatus
+        saveActivatedSTT(restartServer: restart)
         TranscriptionNotifier.requestPermission()
         onActivate?()
         pollHealthSoon()
@@ -486,6 +498,35 @@ struct SettingsView: View {
                         }
                         Button("Save & Use Cloud STT") { model.activateCloud() }
                             .buttonStyle(.borderedProminent)
+                    }
+                }
+
+                if model.selectedTranscriptionBackend == "local" {
+                    section("Transcription language", subtitle: "Skip automatic detection when you usually dictate in one language.") {
+                        Picker("Language", selection: Binding(
+                            get: { model.config.language },
+                            set: { model.config.language = $0; model.saveLanguage() })) {
+                            Text("Automatic").tag("auto")
+                            Text("Russian").tag("ru")
+                            Text("English").tag("en")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .accessibilityLabel("Transcription language")
+                        .glassCard()
+                    }
+
+                    section("Local inference", subtitle: "Control when the MLX model prepares itself after being idle.") {
+                        Toggle(isOn: Binding(
+                            get: { model.config.warmOnWake },
+                            set: { model.config.warmOnWake = $0; model.save() })) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Warm local model after Mac wakes")
+                                Text("Disabled by default to save battery. Recording-start warm-up is always enabled.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .glassCard()
                     }
                 }
 

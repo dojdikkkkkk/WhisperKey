@@ -24,6 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Quit WhisperKey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
 
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+
         if !Config.shared.setupComplete {
             Config.shared.save() // remember incomplete setup across relaunches
             settings.show(firstRun: true)
@@ -58,9 +65,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var levelTimer: Timer?
 
+    @objc private func workspaceDidWake() {
+        let config = Config.shared
+        guard config.transcriptionBackend == "local", config.warmOnWake else { return }
+        debugLog("wake: requesting local model warm-up")
+        client.warmUpIfNeeded(afterWake: true)
+    }
+
     private func startRecording() {
         do {
             try recorder.start()
+            client.warmUpIfNeeded()
             setStatus(.recording)
             // feed voice loudness into the notch glow ~20 times a second
             levelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in

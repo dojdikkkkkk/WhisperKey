@@ -106,6 +106,10 @@ class CloudServerTests(unittest.TestCase):
                 self.assertEqual(health["backend"], "openai")
                 self.assertEqual(health["model"], "test-model")
 
+                warm_request = Request(f"http://127.0.0.1:{port}/warm", data=b"", method="POST")
+                with urlopen(warm_request, timeout=2) as response:
+                    self.assertEqual(json.load(response)["warmup"], "unavailable")
+
                 silent_request = Request(
                     f"http://127.0.0.1:{port}/transcribe",
                     data=wav_bytes(0), method="POST",
@@ -137,28 +141,48 @@ class CloudServerTests(unittest.TestCase):
         self.assertNotIn("Warming up", output)
         self.assertNotIn("test-key", output)
 
-    def test_local_mode_still_warms_configured_model(self):
+    def test_local_mode_coordinates_warmup_and_forwards_language(self):
         server_script = Path(__file__).with_name("transcribe_server.py")
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as modules:
+        with (tempfile.TemporaryDirectory() as home,
+              tempfile.TemporaryDirectory() as modules):
             port = free_port()
+            calls_path = Path(home) / "mlx-calls.jsonl"
             config_dir = Path(home) / ".whisperkey"
             config_dir.mkdir()
             (config_dir / "config.json").write_text(json.dumps({
                 "port": port,
                 "transcriptionBackend": "local",
                 "model": "test-local-model",
+                "language": "ru",
                 "logTranscripts": False,
             }))
             Path(modules, "mlx_whisper.py").write_text(
+                "import json, os, time\n"
+                "busy = False\n"
                 "def transcribe(audio, path_or_hf_repo=None, **kwargs):\n"
-                "    return {'text': 'local result', 'language': 'en'}\n"
+                "    global busy\n"
+                "    if busy: raise RuntimeError('concurrent MLX inference')\n"
+                "    busy = True\n"
+                "    try:\n"
+                "        with open(os.environ['FAKE_MLX_CALLS'], 'a') as f:\n"
+                "            f.write(json.dumps(kwargs) + '\\n')\n"
+                "        time.sleep(0.15)\n"
+                "        return {'text': 'local result', 'language': kwargs.get('language', 'en')}\n"
+                "    finally:\n"
+                "        busy = False\n"
             )
             Path(modules, "numpy.py").write_text(
                 "float32 = 'float32'\n"
-                "def zeros(size, dtype=None): return [0.0] * size\n"
+                "int16 = 'int16'\n"
+                "class Values(list):\n"
+                "    def astype(self, dtype): return self\n"
+                "    def __truediv__(self, value): return self\n"
+                "def zeros(size, dtype=None): return Values([0.0] * size)\n"
+                "def frombuffer(data, dtype=None): return Values()\n"
             )
             env = dict(os.environ, HOME=home, PYTHONDONTWRITEBYTECODE="1",
-                       PYTHONPATH=modules)
+                       PYTHONPATH=modules, FAKE_MLX_CALLS=str(calls_path),
+                       WHISPERKEY_WARM_IDLE_SECONDS="0.2")
             process = subprocess.Popen(
                 [sys.executable, str(server_script)],
                 cwd=server_script.parent,
@@ -169,6 +193,12 @@ class CloudServerTests(unittest.TestCase):
             )
             try:
                 health = wait_for_health(port, process)
+                self.assertEqual(health["status"], "loading")
+
+                warm_request = Request(f"http://127.0.0.1:{port}/warm", data=b"", method="POST")
+                with urlopen(warm_request, timeout=2) as response:
+                    self.assertEqual(json.load(response)["warmup"], "in_progress")
+
                 deadline = time.time() + 2
                 while health["status"] == "loading" and time.time() < deadline:
                     time.sleep(0.05)
@@ -176,6 +206,37 @@ class CloudServerTests(unittest.TestCase):
                 self.assertEqual(health["status"], "ok")
                 self.assertEqual(health["backend"], "local")
                 self.assertEqual(health["model"], "test-local-model")
+                self.assertIsInstance(health["lastWarmSeconds"], float)
+                self.assertIsInstance(health["modelIdleSeconds"], float)
+
+                with urlopen(warm_request, timeout=2) as response:
+                    self.assertEqual(json.load(response)["warmup"], "skipped")
+
+                wake_request = Request(
+                    f"http://127.0.0.1:{port}/warm", data=b"", method="POST",
+                    headers={"X-WhisperKey-Warm-Reason": "wake"},
+                )
+                with urlopen(wake_request, timeout=2) as response:
+                    self.assertEqual(response.status, 202)
+                    self.assertEqual(json.load(response)["warmup"], "started")
+                with urlopen(warm_request, timeout=2) as response:
+                    self.assertEqual(json.load(response)["warmup"], "in_progress")
+
+                # A real request arriving during warm-up must wait instead of
+                # entering the fake MLX module concurrently.
+                request = Request(
+                    f"http://127.0.0.1:{port}/transcribe",
+                    data=wav_bytes(1000), method="POST",
+                    headers={"Content-Type": "audio/wav"},
+                )
+                with urlopen(request, timeout=2) as response:
+                    result = json.load(response)
+                health = wait_for_health(port, process)
+                self.assertFalse(health["warming"])
+                self.assertEqual(result["text"], "local result")
+                self.assertEqual(result["language"], "ru")
+                calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+                self.assertEqual(calls[-1]["language"], "ru")
             finally:
                 process.terminate()
                 try:

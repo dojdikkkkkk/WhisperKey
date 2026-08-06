@@ -2,7 +2,8 @@
 """WhisperKey transcription server.
 
 Serves POST /transcribe (WAV body -> text) through either local MLX Whisper or
-an OpenAI-compatible cloud endpoint. A glossary (glossary.json) biases decoding
+an OpenAI-compatible cloud endpoint. POST /warm prepares an idle local model in
+the background. A glossary (glossary.json) biases decoding
 via a prompt and fixes mangled domain terms with regex rules. Transcriptions are
 logged to transcripts.jsonl
 (configurable) as raw material for the self-learning cycle (learn.py).
@@ -35,6 +36,8 @@ SILENCE_PEAK = 0.004  # normalized amplitude below which we skip transcription
 DEFAULTS = {
     "port": 8737,
     "model": "mlx-community/whisper-large-v3-turbo",
+    "language": "auto",
+    "warmOnWake": False,
     "transcriptionBackend": "local",
     "cloudEndpoint": "https://api.groq.com/openai/v1/audio/transcriptions",
     "cloudModel": "whisper-large-v3-turbo",
@@ -66,23 +69,71 @@ ACTIVE_MODEL = CLOUD_MODEL if BACKEND == "openai" else LOCAL_MODEL_NAME
 model_ready = BACKEND == "openai"
 backend_error = "" if BACKEND in {"local", "openai"} else f"unknown backend: {BACKEND}"
 mlx_whisper = None
-warm_started_at = 0.0
+inference_lock = threading.Lock()
+model_state_lock = threading.Lock()
+warm_in_progress = False
+last_model_use_at = 0.0
+last_warm_seconds = None
+WARM_IDLE_SECONDS = float(os.environ.get("WHISPERKEY_WARM_IDLE_SECONDS", "3600"))
 
 
-def warm_up():
-    global mlx_whisper, model_ready
+def mark_model_used():
+    global last_model_use_at
+    with model_state_lock:
+        # Wall time intentionally includes time spent asleep.
+        last_model_use_at = time.time()
+
+
+def warm_up(reason):
+    global mlx_whisper, model_ready, warm_in_progress
+    global last_model_use_at, last_warm_seconds
+    started_at = time.monotonic()
     try:
         import mlx_whisper as mlx_module
         import numpy as np
 
         mlx_whisper = mlx_module
-        mlx_whisper.transcribe(
-            np.zeros(16000, dtype=np.float32), path_or_hf_repo=LOCAL_MODEL_NAME
-        )
-        model_ready = True
-        print(f"Model warm in {time.time() - warm_started_at:.1f}s", flush=True)
+        with inference_lock:
+            mlx_whisper.transcribe(
+                np.zeros(16000, dtype=np.float32), path_or_hf_repo=LOCAL_MODEL_NAME
+            )
+        elapsed = time.monotonic() - started_at
+        with model_state_lock:
+            model_ready = True
+            last_model_use_at = time.time()
+            last_warm_seconds = elapsed
+        print(f"Model warm ({reason}) in {elapsed:.1f}s", flush=True)
     except Exception as error:
-        print(f"Model warm-up failed: {error}", flush=True)
+        print(f"Model warm-up failed ({reason}): {error}", flush=True)
+    finally:
+        with model_state_lock:
+            warm_in_progress = False
+
+
+def request_warm_up(reason, force=False):
+    """Start a background local warm-up unless one is active or recently ran."""
+    global warm_in_progress
+    if BACKEND != "local":
+        return "unavailable"
+    with model_state_lock:
+        if warm_in_progress:
+            return "in_progress"
+        if (not force and last_model_use_at
+                and time.time() - last_model_use_at < WARM_IDLE_SECONDS):
+            return "skipped"
+        warm_in_progress = True
+    threading.Thread(target=warm_up, args=(reason,), daemon=True).start()
+    return "started"
+
+
+def model_metrics():
+    with model_state_lock:
+        metrics = {"warming": warm_in_progress}
+        if last_warm_seconds is not None:
+            metrics["lastWarmSeconds"] = round(last_warm_seconds, 2)
+        if last_model_use_at:
+            metrics["modelIdleSeconds"] = round(time.time() - last_model_use_at, 2)
+        return metrics
 
 
 def wav_frames(data):
@@ -215,6 +266,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": status,
                 "backend": BACKEND,
                 "model": ACTIVE_MODEL,
+                **(model_metrics() if BACKEND == "local" else {}),
                 **({"error": backend_error} if backend_error else {}),
             })
         else:
@@ -224,6 +276,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/learn":
             started = run_learn_async()
             self._respond(200, {"learning": "started" if started else "unavailable"})
+            return
+        if self.path == "/warm":
+            reason = self.headers.get("X-WhisperKey-Warm-Reason", "request")
+            force = reason == "wake"
+            state = request_warm_up(reason if force else "request", force=force)
+            self._respond(202 if state == "started" else 200, {"warmup": state})
             return
         if self.path == "/restart":
             self._respond(200, {"restarting": True})
@@ -262,12 +320,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 audio = wav_to_float32(body)
-                result = mlx_whisper.transcribe(
-                    audio,
-                    path_or_hf_repo=LOCAL_MODEL_NAME,
-                    condition_on_previous_text=False,  # faster, prevents repetition loops
-                    initial_prompt=glossary.prompt or None,
-                )
+                language = str(load_config().get("language", "auto")).strip().lower()
+                decode_options = {} if language in {"", "auto"} else {"language": language}
+                with inference_lock:
+                    result = mlx_whisper.transcribe(
+                        audio,
+                        path_or_hf_repo=LOCAL_MODEL_NAME,
+                        condition_on_previous_text=False,  # faster, prevents repetition loops
+                        initial_prompt=glossary.prompt or None,
+                        **decode_options,
+                    )
+                mark_model_used()
             raw = result["text"].strip()
             language = result.get("language", "")
         except CloudSTTError as error:
@@ -304,9 +367,8 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     if BACKEND == "local":
-        warm_started_at = time.time()
         print(f"Warming up {LOCAL_MODEL_NAME}...", flush=True)
-        threading.Thread(target=warm_up, daemon=True).start()
+        request_warm_up("startup", force=True)
     elif BACKEND == "openai":
         print(f"Cloud STT ready: {CLOUD_MODEL}", flush=True)
     else:

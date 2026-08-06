@@ -40,7 +40,7 @@ System Settings → Privacy & Security: **Microphone** и **Accessibility** (У�
 
 ## Настройка
 
-Конфиг: `~/.whisperkey/config.json` + окно **Settings…** в меню-баре. Основные ключи STT: `transcriptionBackend` (`local`/`openai`), `model` для Local MLX, а также `cloudProvider`, `cloudEndpoint` и `cloudModel` для Cloud API. API-ключ хранится отдельно в macOS Keychain и в JSON не записывается. Остальные ключи: `learnBackend` (`ollama`/`claude`/`codex`/`pi`/`agent-manual`/`off`), `ollamaModel`, `holdThreshold`, `learnEvery`, `logTranscripts`.
+Конфиг: `~/.whisperkey/config.json` + окно **Settings…** в меню-баре. Основные ключи STT: `transcriptionBackend` (`local`/`openai`), `model` для Local MLX, `language` (`auto` или код вроде `ru`/`en`) и `warmOnWake` (по умолчанию `false`), а также `cloudProvider`, `cloudEndpoint` и `cloudModel` для Cloud API. При начале записи Local MLX разогревается автоматически; опциональный разогрев после пробуждения Mac можно включить в Settings, учитывая дополнительный расход батареи. API-ключ хранится отдельно в macOS Keychain и в JSON не записывается. Остальные ключи: `learnBackend` (`ollama`/`claude`/`codex`/`pi`/`agent-manual`/`off`), `ollamaModel`, `holdThreshold`, `learnEvery`, `logTranscripts`.
 
 ### Облачное распознавание
 
