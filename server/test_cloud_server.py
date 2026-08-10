@@ -105,6 +105,7 @@ class CloudServerTests(unittest.TestCase):
                 self.assertEqual(health["status"], "ok")
                 self.assertEqual(health["backend"], "openai")
                 self.assertEqual(health["model"], "test-model")
+                self.assertEqual(health["endpoint"], endpoint)
 
                 warm_request = Request(f"http://127.0.0.1:{port}/warm", data=b"", method="POST")
                 with urlopen(warm_request, timeout=2) as response:
@@ -237,6 +238,25 @@ class CloudServerTests(unittest.TestCase):
                 self.assertEqual(result["language"], "ru")
                 calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
                 self.assertEqual(calls[-1]["language"], "ru")
+
+                # A language edit is picked up without a restart...
+                (config_dir / "config.json").write_text(json.dumps({
+                    "port": port,
+                    "transcriptionBackend": "local",
+                    "model": "test-local-model",
+                    "language": "EN ",
+                    "logTranscripts": False,
+                }))
+                with urlopen(request, timeout=2) as response:
+                    self.assertEqual(json.load(response)["language"], "en")
+
+                # ...but a config caught mid-write keeps the last known good
+                # value instead of silently transcribing with auto-detection.
+                (config_dir / "config.json").write_text('{"language": "r')
+                with urlopen(request, timeout=2) as response:
+                    self.assertEqual(json.load(response)["language"], "en")
+                calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+                self.assertEqual(calls[-1]["language"], "en")
             finally:
                 process.terminate()
                 try:
@@ -247,6 +267,8 @@ class CloudServerTests(unittest.TestCase):
 
         self.assertIn("Warming up test-local-model", output)
         self.assertIn("Model warm", output)
+        self.assertIn("Language set to en", output)
+        self.assertIn("Config reload failed, keeping language=en", output)
 
 
 if __name__ == "__main__":

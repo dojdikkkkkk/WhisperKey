@@ -45,6 +45,12 @@ struct Config: Codable {
 
     static var shared: Config = load()
 
+    /// Whisper language codes are lowercase; an empty value means auto-detect.
+    static func normalizedLanguage(_ value: String) -> String {
+        let code = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return code.isEmpty ? "auto" : code
+    }
+
     static func load() -> Config {
         guard let data = FileManager.default.contents(atPath: path) else {
             var c = defaults
@@ -59,7 +65,7 @@ struct Config: Codable {
         if let v = json["serverDir"] as? String { c.serverDir = NSString(string: v).expandingTildeInPath }
         if let v = json["port"] as? Int { c.port = v }
         if let v = json["model"] as? String { c.model = v }
-        if let v = json["language"] as? String { c.language = v }
+        if let v = json["language"] as? String { c.language = normalizedLanguage(v) }
         if let v = json["warmOnWake"] as? Bool { c.warmOnWake = v }
         if let v = json["transcriptionBackend"] as? String { c.transcriptionBackend = v }
         if let v = json["cloudProvider"] as? String { c.cloudProvider = v }
@@ -81,7 +87,9 @@ struct Config: Codable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(self) {
-            try? data.write(to: URL(fileURLWithPath: Self.path))
+            // Atomic: the server re-reads this file while dictations run and
+            // must never see a half-written config.
+            try? data.write(to: URL(fileURLWithPath: Self.path), options: .atomic)
         }
         Config.shared = self
     }

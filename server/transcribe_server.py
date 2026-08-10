@@ -37,7 +37,6 @@ DEFAULTS = {
     "port": 8737,
     "model": "mlx-community/whisper-large-v3-turbo",
     "language": "auto",
-    "warmOnWake": False,
     "transcriptionBackend": "local",
     "cloudEndpoint": "https://api.groq.com/openai/v1/audio/transcriptions",
     "cloudModel": "whisper-large-v3-turbo",
@@ -52,8 +51,10 @@ def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg.update(json.load(f))
-    except (OSError, json.JSONDecodeError):
-        pass
+    except FileNotFoundError:
+        pass  # first run: the defaults above are the config
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Config unreadable, using defaults: {e}", flush=True)
     return cfg
 
 
@@ -134,6 +135,51 @@ def model_metrics():
         if last_model_use_at:
             metrics["modelIdleSeconds"] = round(time.time() - last_model_use_at, 2)
         return metrics
+
+
+def normalize_language(value):
+    """Return a Whisper language code, or "" for automatic detection."""
+    language = str(value).strip().lower()
+    return "" if language == "auto" else language
+
+
+class LanguageSetting:
+    """`language` from config.json with mtime-based hot reload.
+
+    Only this setting is hot-reloaded; every other setting needs a restart. The
+    app writes config.json while dictations may be in flight, so an unreadable
+    file keeps the last known good value and says so in the log instead of
+    silently falling back to auto-detection.
+    """
+
+    def __init__(self, path, value):
+        self.path = path
+        self.mtime = 0.0
+        self.value = normalize_language(value)
+
+    def current(self):
+        try:
+            mtime = os.path.getmtime(self.path)
+        except OSError:
+            return self.value  # no config file: startup defaults still apply
+        if mtime == self.mtime:
+            return self.value
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                value = json.load(f).get("language", DEFAULTS["language"])
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"Config reload failed, keeping language={self.value or 'auto'}: {e}",
+                  flush=True)
+            return self.value
+        self.mtime = mtime
+        language = normalize_language(value)
+        if language != self.value:
+            self.value = language
+            print(f"Language set to {language or 'auto'}", flush=True)
+        return self.value
+
+
+language_setting = LanguageSetting(CONFIG_PATH, config["language"])
 
 
 def wav_frames(data):
@@ -266,6 +312,9 @@ class Handler(BaseHTTPRequestHandler):
                 "status": status,
                 "backend": BACKEND,
                 "model": ACTIVE_MODEL,
+                # Settings compares these against what it is about to activate,
+                # so a stale server gets restarted instead of silently kept.
+                **({"endpoint": CLOUD_ENDPOINT} if BACKEND == "openai" else {}),
                 **(model_metrics() if BACKEND == "local" else {}),
                 **({"error": backend_error} if backend_error else {}),
             })
@@ -320,8 +369,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 audio = wav_to_float32(body)
-                language = str(load_config().get("language", "auto")).strip().lower()
-                decode_options = {} if language in {"", "auto"} else {"language": language}
+                language = language_setting.current()
+                decode_options = {"language": language} if language else {}
                 with inference_lock:
                     result = mlx_whisper.transcribe(
                         audio,
