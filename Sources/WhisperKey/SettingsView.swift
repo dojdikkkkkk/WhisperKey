@@ -27,6 +27,26 @@ let sttModels: [STTModel] = [
              quality: "Near-large accuracy", note: "English only"),
 ]
 
+// MARK: - Transcription languages
+
+struct LanguageOption: Identifiable {
+    let id: String     // Whisper language code, or "auto"
+    let label: String
+}
+
+let curatedLanguages: [LanguageOption] = [
+    LanguageOption(id: "auto", label: "Automatic"),
+    LanguageOption(id: "ru", label: "Russian"),
+    LanguageOption(id: "en", label: "English"),
+]
+
+/// Whisper accepts any language code, so a code that came from a hand-edited
+/// config gets its own segment instead of leaving the picker with no selection.
+func languageOptions(including code: String) -> [LanguageOption] {
+    guard !curatedLanguages.contains(where: { $0.id == code }) else { return curatedLanguages }
+    return curatedLanguages + [LanguageOption(id: code, label: code.uppercased())]
+}
+
 // MARK: - Learning backends
 
 struct LearnBackend: Identifiable {
@@ -213,31 +233,64 @@ struct HistoryView: View {
 
 // MARK: - Settings view
 
+/// What the running server reports for itself — not what the app last wrote.
+struct ServerHealth {
+    let status: String
+    let backend: String
+    let model: String
+    let endpoint: String?
+    let warming: Bool
+}
+
 final class SettingsModel: ObservableObject {
     @Published var config = Config.shared
     @Published var serverStatus = "…"
+    @Published var serverHealth: ServerHealth?
     @Published var selectedTranscriptionBackend = Config.shared.transcriptionBackend
     @Published var cloudAPIKey = ""
     @Published var hasCloudAPIKey = false
     @Published var cloudValidationError: String?
     var onActivate: (() -> Void)?
 
-    func save(restartServer: Bool = false) {
-        if restartServer {
-            config.save()
-            var req = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/restart")!)
-            req.httpMethod = "POST"
-            URLSession.shared.dataTask(with: req).resume()
-        } else {
-            // Backend controls are drafts until their explicit activation button.
-            var persisted = config
-            persisted.model = Config.shared.model
-            persisted.transcriptionBackend = Config.shared.transcriptionBackend
-            persisted.cloudProvider = Config.shared.cloudProvider
-            persisted.cloudEndpoint = Config.shared.cloudEndpoint
-            persisted.cloudModel = Config.shared.cloudModel
-            persisted.save()
-        }
+    func save() {
+        // Backend controls are drafts until their explicit activation button.
+        var persisted = config
+        persisted.model = Config.shared.model
+        persisted.transcriptionBackend = Config.shared.transcriptionBackend
+        persisted.cloudProvider = Config.shared.cloudProvider
+        persisted.cloudEndpoint = Config.shared.cloudEndpoint
+        persisted.cloudModel = Config.shared.cloudModel
+        persisted.save()
+    }
+
+    private func saveActivatedSTT(restartServer: Bool) {
+        config.save()
+        guard restartServer else { return }
+        serverHealth = nil   // describes the process that is being replaced
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(config.port)/restart")!)
+        req.httpMethod = "POST"
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    func saveLanguage() {
+        config.language = Config.normalizedLanguage(config.language)
+        save()
+    }
+
+    /// The restart is skipped only when the running server itself reports the
+    /// configuration being activated. Comparing against `Config.shared` — the
+    /// app's record of what it last wrote — makes the button a no-op whenever
+    /// the two drift apart (a hand-edited config.json, or a warm-up that died
+    /// and left `/health` stuck on `loading`), and `/restart` is the only
+    /// recovery path in the UI. A warm-up still in flight counts as running, so
+    /// activating twice never kills an ongoing model download.
+    private func serverAlreadyRunning(backend: String, model: String, endpoint: String?) -> Bool {
+        guard let health = serverHealth,
+              health.backend == backend,
+              health.model == model,
+              health.status == "ok" || health.warming else { return false }
+        guard let endpoint else { return true }
+        return health.endpoint == endpoint
     }
 
     func selectCloudProvider(_ provider: String) {
@@ -254,8 +307,9 @@ final class SettingsModel: ObservableObject {
         config.transcriptionBackend = "local"
         config.setupComplete = true
         cloudValidationError = nil
-        serverStatus = "starting…"
-        save(restartServer: true)
+        let restart = !serverAlreadyRunning(backend: "local", model: config.model, endpoint: nil)
+        serverStatus = restart ? "starting…" : serverStatus
+        saveActivatedSTT(restartServer: restart)
         onActivate?()
         pollHealthSoon()
     }
@@ -296,8 +350,9 @@ final class SettingsModel: ObservableObject {
         config.setupComplete = true
         cloudAPIKey = ""
         cloudValidationError = nil
-        serverStatus = "starting…"
-        save(restartServer: true)
+        let restart = !serverAlreadyRunning(backend: "openai", model: model, endpoint: endpoint)
+        serverStatus = restart ? "starting…" : serverStatus
+        saveActivatedSTT(restartServer: restart)
         TranscriptionNotifier.requestPermission()
         onActivate?()
         pollHealthSoon()
@@ -327,6 +382,7 @@ final class SettingsModel: ObservableObject {
         let url = URL(string: "http://127.0.0.1:\(config.port)/health")!
         URLSession.shared.dataTask(with: url) { data, _, _ in
             var status = "server offline"
+            var health: ServerHealth?
             if let data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let value = json["status"] as? String {
@@ -335,8 +391,18 @@ final class SettingsModel: ObservableObject {
                 case "loading": status = "loading model…"
                 default: status = json["error"] as? String ?? "configuration error"
                 }
+                health = ServerHealth(status: value,
+                                      backend: json["backend"] as? String ?? "",
+                                      model: json["model"] as? String ?? "",
+                                      endpoint: json["endpoint"] as? String,
+                                      warming: json["warming"] as? Bool ?? false)
             }
-            DispatchQueue.main.async { self.serverStatus = status }
+            // An unreachable or unparseable server leaves no snapshot, so the
+            // next activation restarts it.
+            DispatchQueue.main.async {
+                self.serverStatus = status
+                self.serverHealth = health
+            }
         }.resume()
     }
 
@@ -489,6 +555,35 @@ struct SettingsView: View {
                     }
                 }
 
+                if model.selectedTranscriptionBackend == "local" {
+                    section("Transcription language", subtitle: "Skip automatic detection when you usually dictate in one language.") {
+                        Picker("Language", selection: Binding(
+                            get: { model.config.language },
+                            set: { model.config.language = $0; model.saveLanguage() })) {
+                            ForEach(languageOptions(including: model.config.language)) { option in
+                                Text(option.label).tag(option.id)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .accessibilityLabel("Transcription language")
+                        .glassCard()
+                    }
+
+                    section("Local inference", subtitle: "Control when the MLX model prepares itself after being idle.") {
+                        Toggle(isOn: Binding(
+                            get: { model.config.warmOnWake },
+                            set: { model.config.warmOnWake = $0; model.save() })) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Warm local model after Mac wakes")
+                                Text("Disabled by default to save battery. Recording-start warm-up is always enabled.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .glassCard()
+                    }
+                }
+
                 section("Glossary self-learning", subtitle: "Reviews your recent dictations and teaches the glossary new domain terms.") {
                     ForEach(learnBackends) { b in
                         let available = cliAvailable(b.cliName)
@@ -623,6 +718,7 @@ final class SettingsWindowController {
         model.config = Config.shared
         model.selectedTranscriptionBackend = model.config.transcriptionBackend
         model.reloadCloudAPIKeyState()
+        model.serverHealth = nil   // never activate against a snapshot from last time
         model.pollHealth()
         tabs.tab = historyTab ? 1 : 0
         history.entries = TranscriptHistory.load()

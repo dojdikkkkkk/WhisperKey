@@ -60,6 +60,8 @@ Everything lives in `~/.whisperkey/config.json` and in **Settings…** (menu bar
 | Key | Default | Meaning |
 |---|---|---|
 | `model` | `mlx-community/whisper-large-v3-turbo` | Local MLX Whisper model (HF repo) |
+| `language` | `auto` | Whisper language code (`ru`, `en`, …), or automatic detection |
+| `warmOnWake` | `false` | warm the local model after the Mac wakes; uses extra battery |
 | `transcriptionBackend` | `local` | `local` \| `openai` |
 | `cloudProvider` | `groq` | `groq` \| `custom` |
 | `cloudEndpoint` | Groq transcription URL | Full OpenAI-compatible `/audio/transcriptions` endpoint |
